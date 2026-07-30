@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Install dependencies
@@ -114,6 +114,9 @@ jobs:
           xcrun stapler staple "$dmg_path"
           xcrun stapler validate "$dmg_path"
 
+          updater_file="dist/latest-mac-${{ matrix.arch }}.yml"
+          cp dist/latest-mac.yml "$updater_file"
+
       - name: Verify notarized macOS artifact
         shell: bash
         run: |
@@ -141,7 +144,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
-          path: dist/PawPause-*-mac-${{ matrix.arch }}.dmg
+          path: |
+            dist/PawPause-*-mac-${{ matrix.arch }}.dmg
+            dist/PawPause-*-mac-${{ matrix.arch }}.dmg.blockmap
+            dist/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
 
   build-windows:
@@ -156,7 +162,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Install dependencies
@@ -169,7 +175,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: dist/PawPause-*-win-x64.exe
+          path: |
+            dist/PawPause-*-win-x64.exe
+            dist/PawPause-*-win-x64.exe.blockmap
+            dist/latest.yml
           if-no-files-found: error
 
   publish:
@@ -184,6 +193,22 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+
+      - name: Merge macOS updater metadata
+        shell: bash
+        run: |
+          ruby -ryaml -e '
+            paths = Dir["release-artifacts/latest-mac-*.yml"].sort
+            abort "missing macOS updater metadata" if paths.empty?
+            documents = paths.map { |path| YAML.safe_load(File.read(path), permitted_classes: [Time], aliases: true) }
+            merged = documents.first
+            merged["files"] = documents.flat_map { |document| document.fetch("files") }.uniq { |file| file.fetch("url") }
+            preferred = merged["files"].find { |file| file.fetch("url").include?("arm64") } || merged["files"].first
+            merged["path"] = preferred.fetch("url")
+            merged["sha512"] = preferred.fetch("sha512")
+            File.write("release-artifacts/latest-mac.yml", YAML.dump(merged))
+            paths.each { |path| File.delete(path) }
+          '
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

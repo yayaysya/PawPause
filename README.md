@@ -60,6 +60,18 @@ Download installers from [Releases](https://github.com/angziii/PawPause/releases
 
 On macOS, distraction detection and Agent window recognition require Accessibility permission.
 
+## Claude Code Activity
+
+Claude Code works without an extra PawPause hook or JavaScript plugin:
+
+1. Open PawPause Settings.
+2. In **Settings → Focus**, enable **Agent Completion Alerts**.
+3. Run Claude Code normally.
+
+PawPause watches Claude Code's local session records under `~/.claude/projects` and recognizes
+both current `stop_sequence` records and older `end_turn` records. Accessibility permission on
+macOS is only needed when PawPause needs to recognize or bring the related terminal window forward.
+
 ## OpenCode Agent Hook
 
 PawPause can consume OpenCode lifecycle events through a small OpenCode plugin:

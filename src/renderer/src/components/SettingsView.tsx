@@ -675,6 +675,7 @@ function StatsCompanionship({
 }
 
 export function SettingsView(): JSX.Element {
+  const prefsRef = useRef<HTMLElement>(null);
   const snapshot = useSnapshot();
   const { settings, stats } = snapshot;
   const [draft, setDraft] = useState(settings);
@@ -736,6 +737,11 @@ export function SettingsView(): JSX.Element {
     setSettingsDirty(true);
   }
 
+  function selectPage(nextPage: PrefsPage): void {
+    setPage(nextPage);
+    window.requestAnimationFrame(() => prefsRef.current?.scrollTo({ top: 0, behavior: "auto" }));
+  }
+
   function updateCustomReminders(customReminders: CustomReminder[]): void {
     updateDraft({ customReminders });
   }
@@ -784,31 +790,33 @@ export function SettingsView(): JSX.Element {
     setImportStatus(`${labels.importPetSuccess}: ${result.pet.manifest.displayName}`);
   }
 
+  async function removePet(pet: InstalledPet): Promise<void> {
+    const displayName = pet.manifest.displayName;
+    if (!window.confirm(labels.removePetConfirm(displayName))) return;
+    setImportStatus(null);
+    const result = await window.pawpause.deletePet(pet.slug);
+    if (!result.ok) {
+      setImportStatus(`${labels.removePetError}: ${result.error}`);
+      return;
+    }
+    setImportStatus(`${labels.removePetSuccess}: ${displayName}`);
+  }
+
   const selectablePets = useMemo(() => allPets(draft.installedPets), [draft.installedPets]);
-  const petOptions = selectablePets.map((pet) => ({
-    value: pet.slug,
-    label: pet.manifest.displayName
-  }));
 
   return (
-    <main className="prefs" dir={language === "ar" ? "rtl" : "ltr"}>
+    <main ref={prefsRef} className="prefs" dir={language === "ar" ? "rtl" : "ltr"}>
       <header className="prefs__topbar">
         <SegmentedControl
-          value={page === "settings" ? null : page}
+          value={page}
           options={[
             { value: "stats", label: labels.statsHeading },
             { value: "pets", label: labels.petAppearance },
-            { value: "reminders", label: labels.reminderPageTitle }
+            { value: "reminders", label: labels.reminderPageTitle },
+            { value: "settings", label: labels.title }
           ]}
-          onChange={(value) => setPage(value)}
+          onChange={selectPage}
         />
-        <button
-          type="button"
-          className={`pref-button${page === "settings" ? " is-primary" : ""}`}
-          onClick={() => setPage("settings")}
-        >
-          {labels.title}
-        </button>
       </header>
       {page === "settings" ? <h1 className="prefs__page-title">{labels.title}</h1> : null}
       {page === "reminders" ? <h1 className="prefs__page-title">{labels.reminderPageTitle}</h1> : null}
@@ -887,13 +895,17 @@ export function SettingsView(): JSX.Element {
         <section className="prefs__group">
           <div className="pref-block pref-block--flush">
             <div className="pet-picker">
-              {petOptions.map((option) => (
+              {selectablePets.map((pet) => (
                 <PetCard
-                  key={option.value}
-                  pet={selectablePets.find((pet) => pet.slug === option.value)}
-                  label={option.label}
-                  selected={draft.selectedPetId === option.value}
-                  onSelect={() => updateDraft({ selectedPetId: option.value })}
+                  key={pet.slug}
+                  pet={pet}
+                  label={pet.manifest.displayName}
+                  selected={draft.selectedPetId === pet.slug}
+                  onSelect={() => updateDraft({ selectedPetId: pet.slug })}
+                  onRemove={
+                    pet.manifest.source === "imported" ? () => void removePet(pet) : undefined
+                  }
+                  removeLabel={labels.removePet(pet.manifest.displayName)}
                 />
               ))}
             </div>
@@ -1496,57 +1508,74 @@ function PetCard({
   pet,
   label,
   selected,
-  onSelect
+  onSelect,
+  onRemove,
+  removeLabel
 }: {
-  pet?: InstalledPet;
+  pet: InstalledPet;
   label: string;
   selected: boolean;
   onSelect: () => void;
+  onRemove?: () => void;
+  removeLabel: string;
 }): JSX.Element {
   const asset = useMemo(
-    () => getSelectedPetAsset(pet?.slug ?? "boxcat", pet ? [pet] : [], "idle"),
+    () => getSelectedPetAsset(pet.slug, [pet], "idle"),
     [pet]
   );
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      className={`pet-card${selected ? " is-selected" : ""}`}
-      onClick={onSelect}
-    >
-      <span className="pet-card__preview">
-        {asset.kind === "sprite" ? (
-          <span
-            className="sprite-pet sprite-pet--preview"
-            style={
-              {
-                "--sprite-url": `url(${asset.src})`,
-                "--sprite-row": asset.animation.row,
-                "--sprite-frames": asset.animation.frames,
-                "--sprite-duration": `${asset.animation.durationMs}ms`,
-                "--sprite-frame-width": `${asset.frameWidth}px`,
-                "--sprite-frame-height": `${asset.frameHeight}px`,
-                "--sprite-sheet-width": `${asset.sheetWidth}px`,
-                "--sprite-sheet-height": `${asset.sheetHeight}px`
-              } as CSSProperties
-            }
-          />
-        ) : (
-          <span className="fallback-pet fallback-pet--preview" aria-hidden="true">
-            <span className="fallback-pet__ear fallback-pet__ear--left" />
-            <span className="fallback-pet__ear fallback-pet__ear--right" />
-            <span className="fallback-pet__face">
-              <span className="fallback-pet__eye fallback-pet__eye--left" />
-              <span className="fallback-pet__eye fallback-pet__eye--right" />
-              <span className="fallback-pet__nose" />
+    <div className={`pet-card${selected ? " is-selected" : ""}`}>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        className="pet-card__select"
+        onClick={onSelect}
+      >
+        <span className="pet-card__preview">
+          {asset.kind === "sprite" ? (
+            <span
+              className="sprite-pet sprite-pet--preview"
+              style={
+                {
+                  "--sprite-url": `url(${asset.src})`,
+                  "--sprite-row": asset.animation.row,
+                  "--sprite-frames": asset.animation.frames,
+                  "--sprite-duration": `${asset.animation.durationMs}ms`,
+                  "--sprite-frame-width": `${asset.frameWidth}px`,
+                  "--sprite-frame-height": `${asset.frameHeight}px`,
+                  "--sprite-sheet-width": `${asset.sheetWidth}px`,
+                  "--sprite-sheet-height": `${asset.sheetHeight}px`
+                } as CSSProperties
+              }
+            />
+          ) : (
+            <span className="fallback-pet fallback-pet--preview" aria-hidden="true">
+              <span className="fallback-pet__ear fallback-pet__ear--left" />
+              <span className="fallback-pet__ear fallback-pet__ear--right" />
+              <span className="fallback-pet__face">
+                <span className="fallback-pet__eye fallback-pet__eye--left" />
+                <span className="fallback-pet__eye fallback-pet__eye--right" />
+                <span className="fallback-pet__nose" />
+              </span>
+              <span className="fallback-pet__tail" />
             </span>
-            <span className="fallback-pet__tail" />
-          </span>
-        )}
-      </span>
-      <span className="pet-card__name">{label}</span>
-    </button>
+          )}
+        </span>
+        <span className="pet-card__name">{label}</span>
+      </button>
+      {onRemove ? (
+        <button
+          type="button"
+          className="pet-card__remove"
+          aria-label={removeLabel}
+          title={removeLabel}
+          onClick={onRemove}
+        >
+          ×
+        </button>
+      ) : null}
+    </div>
   );
 }
 

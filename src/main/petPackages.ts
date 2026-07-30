@@ -1,4 +1,3 @@
-import { inflateRawSync } from "node:zlib";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import {
   mkdir,
@@ -12,7 +11,14 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import electron from "electron";
-import type { InstalledPet, PetImportResult, PetPackageManifest } from "../shared/types";
+import { deletePawPausePet } from "./petDeletion";
+import { extractPetZip } from "./petArchive";
+import type {
+  InstalledPet,
+  PetDeleteResult,
+  PetImportResult,
+  PetPackageManifest
+} from "../shared/types";
 
 const { app, dialog } = electron;
 
@@ -33,14 +39,17 @@ export function legacyUserPetsRoot(): string {
 }
 
 export function discoverInstalledPets(): InstalledPet[] {
-  const roots = [userPetsRoot(), legacyUserPetsRoot()];
+  const roots = [
+    { path: userPetsRoot(), source: "imported" as const },
+    { path: legacyUserPetsRoot(), source: "petdex" as const }
+  ];
   const pets = new Map<string, InstalledPet>();
 
   for (const root of roots) {
-    if (!existsSync(root)) continue;
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!existsSync(root.path)) continue;
+    for (const entry of readdirSync(root.path, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const pet = readInstalledPet(path.join(root, entry.name), entry.name);
+      const pet = readInstalledPet(path.join(root.path, entry.name), entry.name, root.source);
       if (pet) pets.set(pet.slug, pet);
     }
   }
@@ -75,7 +84,7 @@ export async function importPetPackage(sourcePath: string): Promise<PetImportRes
   try {
     const root = input.isDirectory()
       ? sourcePath
-      : await extractZipPackage(sourcePath, workspace);
+      : await extractPetZip(sourcePath, workspace);
     const parsed = await readPackage(root);
     const slug = await uniqueSlug(parsed.manifest.id || path.basename(sourcePath, path.extname(sourcePath)));
     const target = path.join(userPetsRoot(), slug);
@@ -106,6 +115,10 @@ export async function importPetPackage(sourcePath: string): Promise<PetImportRes
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
+}
+
+export async function deleteInstalledPet(slug: string): Promise<PetDeleteResult> {
+  return deletePawPausePet(userPetsRoot(), slug);
 }
 
 async function readPackage(root: string): Promise<{
@@ -177,70 +190,6 @@ async function uniqueSlug(base: string): Promise<string> {
   return `${safeBase}-${Date.now()}`;
 }
 
-async function extractZipPackage(zipPath: string, workspace: string): Promise<string> {
-  const data = await readFile(zipPath);
-  const files = unzip(data);
-  const usable = files.filter((file) => !file.name.endsWith("/"));
-  const hasRootPetJson = usable.some((file) => file.name === "pet.json");
-  const rootNames = new Set(usable.map((file) => file.name.split("/")[0]));
-  const stripSingleRoot = !hasRootPetJson && rootNames.size === 1;
-
-  for (const file of usable) {
-    const relativeName = stripSingleRoot ? file.name.split("/").slice(1).join("/") : file.name;
-    if (!relativeName) continue;
-    const target = path.resolve(workspace, relativeName);
-    if (!target.startsWith(workspace)) continue;
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, file.data);
-  }
-
-  return workspace;
-}
-
-function unzip(data: Buffer): Array<{ name: string; data: Buffer }> {
-  const eocd = findEndOfCentralDirectory(data);
-  if (eocd < 0) throw new Error("Zip package is invalid.");
-  const entryCount = data.readUInt16LE(eocd + 10);
-  let cursor = data.readUInt32LE(eocd + 16);
-  const out: Array<{ name: string; data: Buffer }> = [];
-
-  for (let index = 0; index < entryCount; index += 1) {
-    if (data.readUInt32LE(cursor) !== 0x02014b50) break;
-    const method = data.readUInt16LE(cursor + 10);
-    const compressedSize = data.readUInt32LE(cursor + 20);
-    const nameLength = data.readUInt16LE(cursor + 28);
-    const extraLength = data.readUInt16LE(cursor + 30);
-    const commentLength = data.readUInt16LE(cursor + 32);
-    const localOffset = data.readUInt32LE(cursor + 42);
-    const name = data.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8");
-
-    if (!name.includes("__MACOSX/")) {
-      const localNameLength = data.readUInt16LE(localOffset + 26);
-      const localExtraLength = data.readUInt16LE(localOffset + 28);
-      const fileStart = localOffset + 30 + localNameLength + localExtraLength;
-      const compressed = data.subarray(fileStart, fileStart + compressedSize);
-      if (method !== 0 && method !== 8) {
-        throw new Error(`Unsupported zip compression method: ${method}.`);
-      }
-      out.push({
-        name,
-        data: method === 0 ? compressed : inflateRawSync(compressed)
-      });
-    }
-
-    cursor += 46 + nameLength + extraLength + commentLength;
-  }
-
-  return out;
-}
-
-function findEndOfCentralDirectory(data: Buffer): number {
-  for (let cursor = data.length - 22; cursor >= Math.max(0, data.length - 66000); cursor -= 1) {
-    if (data.readUInt32LE(cursor) === 0x06054b50) return cursor;
-  }
-  return -1;
-}
-
 function measureSprite(sprite: SpriteFile): { width: number; height: number } | null {
   return sprite.ext === "png" ? measurePng(sprite.data) : measureWebp(sprite.data);
 }
@@ -277,7 +226,11 @@ function measureWebp(data: Buffer): { width: number; height: number } | null {
   return null;
 }
 
-function readInstalledPet(root: string, fallbackSlug: string): InstalledPet | null {
+function readInstalledPet(
+  root: string,
+  fallbackSlug: string,
+  source: "imported" | "petdex"
+): InstalledPet | null {
   try {
     const manifestPath = path.join(root, "pet.json");
     const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
@@ -296,7 +249,7 @@ function readInstalledPet(root: string, fallbackSlug: string): InstalledPet | nu
         description: stringField(parsed.description),
         author: stringField(parsed.author),
         spritesheet: spriteName,
-        source: "imported"
+        source
       },
       spritesheetPath: path.join(root, spriteName),
       spritesheetExt: spriteExt,

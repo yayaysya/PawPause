@@ -23,7 +23,7 @@ const faqs = [
   {
     question: "Which AI coding tools can PawPause react to?",
     answer:
-      "PawPause v1.0.6 includes local activity nudges for Codex, Claude Code, OpenCode, DeepSeek TUI, and Hermes Agent workflows.",
+      "PawPause v1.0.9 includes local activity nudges for Codex, Claude Code, OpenCode, DeepSeek TUI, and Hermes Agent workflows.",
   },
   {
     question: "Where can I download PawPause?",
@@ -58,7 +58,7 @@ const jsonLd = [
       name: "PawPause",
       applicationCategory: "ProductivityApplication",
       operatingSystem: "macOS, Windows",
-      softwareVersion: "1.0.6",
+      softwareVersion: "1.0.9",
       url: siteUrl,
       downloadUrl: latestReleaseUrl,
       codeRepository: repoUrl,
@@ -121,13 +121,13 @@ export default function Home() {
       <section className="answer-band answer-band--grid" id="facts" aria-labelledby="facts-title">
         <div className="answer-band__inner">
           <p className="section-kicker">Extractable facts</p>
-          <h2 id="facts-title">PawPause v1.0.6 at a glance</h2>
+          <h2 id="facts-title">PawPause v1.0.9 at a glance</h2>
           <div className="fact-grid">
             <article>
               <span>3</span>
               <h3>Installer targets</h3>
               <p>
-                PawPause v1.0.6 lists macOS Apple Silicon, macOS Intel, and Windows 64-bit
+                PawPause v1.0.9 lists macOS Apple Silicon, macOS Intel, and Windows 64-bit
                 downloads in the project release notes.
               </p>
             </article>
@@ -150,7 +150,7 @@ export default function Home() {
           </div>
           <p className="method-note">
             Method note: these counts were checked from the public PawPause repository and release
-            copy on <time dateTime="2026-05-13">May 13, 2026</time>.
+            copy on <time dateTime="2026-07-30">July 30, 2026</time>.
           </p>
         </div>
       </section>

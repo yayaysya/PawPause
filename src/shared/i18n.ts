@@ -174,6 +174,7 @@ const CORE_I18N = {
       demoFocusWarning: "演示：分心提醒",
       demoHappyReaction: "演示：开心反馈",
       settings: "设置",
+      checkForUpdates: "检查更新",
       resetToday: "重置今日",
       quit: "退出"
     },
@@ -210,6 +211,10 @@ const CORE_I18N = {
       petdexDownloadCta: "想下载更多宠物？去 PetDex 社区看看。",
       importPetSuccess: "已导入宠物到 PawPause 数据目录",
       importPetError: "导入失败",
+      removePet: (name: string) => `删除 ${name}`,
+      removePetConfirm: (name: string) => `确定要删除宠物“${name}”吗？其本地文件也会被删除。`,
+      removePetSuccess: "已删除宠物",
+      removePetError: "删除失败",
       screenBlock: "挡屏休息",
       enableScreenBlock: "休息时放大挡屏",
       screenBlockDuration: "挡屏时长",
@@ -315,7 +320,13 @@ const CORE_I18N = {
       agentActivityHelp: "监听 Codex、Claude Code、OpenCode、DeepSeek TUI 和 Hermes 的本地会话事件，只在完成、失败或需要处理时提醒。"
     },
     system: {
-      unsupportedDistraction: "分心检测目前仅支持 macOS。"
+      unsupportedDistraction: "分心检测目前仅支持 macOS。",
+      updateAvailable: (version: string) => `PawPause ${version} 正在后台下载。`,
+      updateNotAvailable: "你正在使用最新版 PawPause。",
+      updateDownloaded: (version: string) => `PawPause ${version} 已下载完成。要现在重启并安装吗？`,
+      updateError: "暂时无法检查更新，请稍后再试。",
+      restartToUpdate: "重启并更新",
+      later: "稍后"
     }
   },
   en: {
@@ -460,6 +471,7 @@ const CORE_I18N = {
       demoFocusWarning: "Demo: Distraction Nudge",
       demoHappyReaction: "Demo: Happy Reaction",
       settings: "Settings",
+      checkForUpdates: "Check for Updates",
       resetToday: "Reset Today",
       quit: "Quit"
     },
@@ -496,6 +508,11 @@ const CORE_I18N = {
       petdexDownloadCta: "Want more pets? Download them from the PetDex community.",
       importPetSuccess: "Pet imported into PawPause app data",
       importPetError: "Import failed",
+      removePet: (name: string) => `Delete ${name}`,
+      removePetConfirm: (name: string) =>
+        `Delete “${name}”? Its local pet files will also be removed.`,
+      removePetSuccess: "Pet deleted",
+      removePetError: "Delete failed",
       screenBlock: "Screen Block Break",
       enableScreenBlock: "Enlarge pet during breaks",
       screenBlockDuration: "Block Duration",
@@ -606,7 +623,13 @@ const CORE_I18N = {
         "Watches local Codex, Claude Code, OpenCode, DeepSeek TUI, and Hermes events, and only nudges on completion, failure, or review-needed items."
     },
     system: {
-      unsupportedDistraction: "Distraction detection currently supports macOS only."
+      unsupportedDistraction: "Distraction detection currently supports macOS only.",
+      updateAvailable: (version: string) => `PawPause ${version} is downloading in the background.`,
+      updateNotAvailable: "You're using the latest PawPause version.",
+      updateDownloaded: (version: string) => `PawPause ${version} is ready. Restart and install it now?`,
+      updateError: "PawPause couldn't check for updates. Try again later.",
+      restartToUpdate: "Restart and Update",
+      later: "Later"
     }
   }
 } as const;
@@ -1108,6 +1131,7 @@ const LOCALIZED_MENUS = {
     demoFocusWarning: "デモ：気晴らし通知",
     demoHappyReaction: "デモ：うれしい反応",
     settings: "設定",
+    checkForUpdates: "アップデートを確認",
     resetToday: "今日をリセット",
     quit: "終了"
   },
@@ -1121,6 +1145,7 @@ const LOCALIZED_MENUS = {
     demoFocusWarning: "데모: 방해 알림",
     demoHappyReaction: "데모: 기분 좋은 반응",
     settings: "설정",
+    checkForUpdates: "업데이트 확인",
     resetToday: "오늘 초기화",
     quit: "종료"
   },
@@ -1134,6 +1159,7 @@ const LOCALIZED_MENUS = {
     demoFocusWarning: "Demo: distracción",
     demoHappyReaction: "Demo: reacción feliz",
     settings: "Ajustes",
+    checkForUpdates: "Buscar actualizaciones",
     resetToday: "Reiniciar hoy",
     quit: "Salir"
   },
@@ -1147,6 +1173,7 @@ const LOCALIZED_MENUS = {
     demoFocusWarning: "Démo : distraction",
     demoHappyReaction: "Démo : réaction joyeuse",
     settings: "Réglages",
+    checkForUpdates: "Rechercher les mises à jour",
     resetToday: "Réinitialiser aujourd'hui",
     quit: "Quitter"
   },
@@ -1160,6 +1187,7 @@ const LOCALIZED_MENUS = {
     demoFocusWarning: "تجربة: تذكير التشتت",
     demoHappyReaction: "تجربة: تفاعل سعيد",
     settings: "الإعدادات",
+    checkForUpdates: "التحقق من التحديثات",
     resetToday: "إعادة ضبط اليوم",
     quit: "خروج"
   },
@@ -1173,6 +1201,7 @@ const LOCALIZED_MENUS = {
     demoFocusWarning: "Demo: Ablenkung",
     demoHappyReaction: "Demo: Freude",
     settings: "Einstellungen",
+    checkForUpdates: "Nach Updates suchen",
     resetToday: "Heute zurücksetzen",
     quit: "Beenden"
   },
@@ -1186,6 +1215,7 @@ const LOCALIZED_MENUS = {
     demoFocusWarning: "Демо: отвлечение",
     demoHappyReaction: "Демо: радость",
     settings: "Настройки",
+    checkForUpdates: "Проверить обновления",
     resetToday: "Сбросить день",
     quit: "Выйти"
   }
@@ -1225,6 +1255,11 @@ const LOCALIZED_SETTINGS = {
     petdexDownloadCta: "もっとペットが欲しい場合は PetDex コミュニティからダウンロードできます。",
     importPetSuccess: "ペットを PawPause データフォルダへインポートしました",
     importPetError: "インポート失敗",
+    removePet: (name: string) => `${name} を削除`,
+    removePetConfirm: (name: string) =>
+      `ペット「${name}」を削除しますか？ローカルファイルも削除されます。`,
+    removePetSuccess: "ペットを削除しました",
+    removePetError: "削除に失敗しました",
     screenBlock: "画面ブロック休憩",
     enableScreenBlock: "休憩時に画面をブロック",
     screenBlockDuration: "ブロック時間",
@@ -1362,6 +1397,11 @@ const LOCALIZED_SETTINGS = {
     petdexDownloadCta: "더 많은 펫은 PetDex 커뮤니티에서 다운로드하세요.",
     importPetSuccess: "펫을 PawPause 데이터 폴더로 가져왔습니다",
     importPetError: "가져오기 실패",
+    removePet: (name: string) => `${name} 삭제`,
+    removePetConfirm: (name: string) =>
+      `펫 “${name}”을(를) 삭제할까요? 로컬 펫 파일도 함께 삭제됩니다.`,
+    removePetSuccess: "펫을 삭제했습니다",
+    removePetError: "삭제 실패",
     screenBlock: "화면 차단 휴식",
     enableScreenBlock: "휴식 때 화면 차단",
     screenBlockDuration: "차단 시간",
@@ -1498,6 +1538,11 @@ const LOCALIZED_SETTINGS = {
     petdexDownloadCta: "¿Quieres más mascotas? Descárgalas en la comunidad PetDex.",
     importPetSuccess: "Mascota importada en los datos de PawPause",
     importPetError: "Error al importar",
+    removePet: (name: string) => `Eliminar ${name}`,
+    removePetConfirm: (name: string) =>
+      `¿Eliminar “${name}”? También se borrarán sus archivos locales.`,
+    removePetSuccess: "Mascota eliminada",
+    removePetError: "Error al eliminar",
     screenBlock: "Pausa con bloqueo",
     enableScreenBlock: "Bloquear pantalla en descansos",
     screenBlockDuration: "Duración del bloqueo",
@@ -1634,6 +1679,11 @@ const LOCALIZED_SETTINGS = {
     petdexDownloadCta: "Envie de plus de compagnons ? Télécharge-les dans la communauté PetDex.",
     importPetSuccess: "Compagnon importé dans les données PawPause",
     importPetError: "Échec de l'import",
+    removePet: (name: string) => `Supprimer ${name}`,
+    removePetConfirm: (name: string) =>
+      `Supprimer « ${name} » ? Ses fichiers locaux seront également supprimés.`,
+    removePetSuccess: "Compagnon supprimé",
+    removePetError: "Échec de la suppression",
     screenBlock: "Pause avec blocage",
     enableScreenBlock: "Bloquer l'écran pendant les pauses",
     screenBlockDuration: "Durée du blocage",
@@ -1770,6 +1820,11 @@ const LOCALIZED_SETTINGS = {
     petdexDownloadCta: "تريد شخصيات أكثر؟ حمّلها من مجتمع PetDex.",
     importPetSuccess: "تم استيراد الشخصية إلى بيانات PawPause",
     importPetError: "فشل الاستيراد",
+    removePet: (name: string) => `حذف ${name}`,
+    removePetConfirm: (name: string) =>
+      `هل تريد حذف «${name}»؟ سيتم حذف ملفاته المحلية أيضًا.`,
+    removePetSuccess: "تم حذف الشخصية",
+    removePetError: "فشل الحذف",
     screenBlock: "استراحة حجب الشاشة",
     enableScreenBlock: "حجب الشاشة أثناء الاستراحة",
     screenBlockDuration: "مدة الحجب",
@@ -1906,6 +1961,11 @@ const LOCALIZED_SETTINGS = {
     petdexDownloadCta: "Mehr Figuren findest du zum Download in der PetDex-Community.",
     importPetSuccess: "Figur in PawPause-Daten importiert",
     importPetError: "Import fehlgeschlagen",
+    removePet: (name: string) => `${name} löschen`,
+    removePetConfirm: (name: string) =>
+      `„${name}“ löschen? Die lokalen Dateien werden ebenfalls entfernt.`,
+    removePetSuccess: "Figur gelöscht",
+    removePetError: "Löschen fehlgeschlagen",
     screenBlock: "Bildschirm-Pause",
     enableScreenBlock: "Bildschirm in Pausen blockieren",
     screenBlockDuration: "Blockierdauer",
@@ -2042,6 +2102,11 @@ const LOCALIZED_SETTINGS = {
     petdexDownloadCta: "Хочешь больше персонажей? Скачай их в сообществе PetDex.",
     importPetSuccess: "Персонаж импортирован в данные PawPause",
     importPetError: "Ошибка импорта",
+    removePet: (name: string) => `Удалить ${name}`,
+    removePetConfirm: (name: string) =>
+      `Удалить «${name}»? Локальные файлы персонажа также будут удалены.`,
+    removePetSuccess: "Персонаж удалён",
+    removePetError: "Ошибка удаления",
     screenBlock: "Перерыв с блокировкой экрана",
     enableScreenBlock: "Блокировать экран во время перерывов",
     screenBlockDuration: "Длительность блокировки",

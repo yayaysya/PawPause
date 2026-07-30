@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import electron from "electron";
 import Store from "electron-store";
+import updater from "electron-updater";
 import {
   createEmptyStats,
   DEFAULT_CUSTOM_REMINDER_COUNTDOWN_LEAD_MINUTES,
@@ -45,15 +46,18 @@ import {
 } from "./config";
 import { classifyDistraction, isPermissionError, readActiveWindow } from "./distraction";
 import type { ActiveWindowInfo } from "./distraction";
+import { parseClaudeLogRecord } from "./claudeEvents";
 import {
   chooseAndImportPet,
+  deleteInstalledPet,
   discoverInstalledPets,
   legacyUserPetsRoot,
   userPetsRoot
 } from "./petPackages";
 import { createTrayImage } from "./trayIcon";
 
-const { app, BrowserWindow, ipcMain, Menu, nativeTheme, net, protocol, screen, shell, Tray } = electron;
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, screen, shell, Tray } = electron;
+const { autoUpdater } = updater;
 
 type PetPosition = {
   x: number;
@@ -180,6 +184,9 @@ let agentActivityTimer: NodeJS.Timeout | null = null;
 let agentPoseTimer: NodeJS.Timeout | null = null;
 let petLibraryTimer: NodeJS.Timeout | null = null;
 let batteryMonitorTimer: NodeJS.Timeout | null = null;
+let updateCheckTimer: NodeJS.Timeout | null = null;
+let updateCheckInterval: NodeJS.Timeout | null = null;
+let manualUpdateCheck = false;
 let breakRunVelocity: PetPosition = { x: 0, y: 0 };
 let breakRunFormatter: ((seconds: number) => string) | null = null;
 let nextBreakRunTurnAt = 0;
@@ -297,19 +304,8 @@ function normalizeCustomReminders(value: unknown): CustomReminder[] {
   });
 }
 
-function mergeInstalledPets(storedPets: unknown): ReturnType<typeof discoverInstalledPets> {
-  const pets = new Map<string, ReturnType<typeof discoverInstalledPets>[number]>();
-  if (Array.isArray(storedPets)) {
-    for (const pet of storedPets) {
-      if (pet && typeof pet === "object" && typeof pet.slug === "string") {
-        pets.set(pet.slug, pet as ReturnType<typeof discoverInstalledPets>[number]);
-      }
-    }
-  }
-  for (const pet of discoverInstalledPets()) {
-    pets.set(pet.slug, pet);
-  }
-  return [...pets.values()];
+function installedPetsFromDisk(): ReturnType<typeof discoverInstalledPets> {
+  return discoverInstalledPets();
 }
 
 function visiblePetSize(scale: number): Pick<Electron.Rectangle, "width" | "height"> {
@@ -356,7 +352,7 @@ let distractionStatus: DistractionStatus = {
 
 function getSettings(): Settings {
   const stored = store.get("settings");
-  const installedPets = mergeInstalledPets(stored.installedPets);
+  const installedPets = installedPetsFromDisk();
   const candidatePetId =
     typeof stored.selectedPetId === "string" && stored.selectedPetId
       ? stored.selectedPetId
@@ -429,10 +425,14 @@ function text(): ReturnType<typeof i18n> {
 }
 
 function setSettings(next: Settings): void {
+  const installedPets = installedPetsFromDisk();
+  const selectedPetId = allPets(installedPets).some((pet) => pet.slug === next.selectedPetId)
+    ? next.selectedPetId
+    : DEFAULT_SETTINGS.selectedPetId;
   const normalized = {
     ...next,
     language: resolveLanguage(next.language),
-    petAppearanceId: next.selectedPetId,
+    petAppearanceId: selectedPetId,
     petScale: normalizePetScale(next.petScale),
     petRoamEnabled: Boolean(next.petRoamEnabled),
     petRoamDirection: normalizeRoamDirection(next.petRoamDirection),
@@ -446,7 +446,8 @@ function setSettings(next: Settings): void {
     customReminders: normalizeCustomReminders(next.customReminders),
     agentActivityEnabled: Boolean(next.agentActivityEnabled),
     agentCompletionSoundEnabled: Boolean(next.agentCompletionSoundEnabled),
-    installedPets: mergeInstalledPets(next.installedPets)
+    selectedPetId,
+    installedPets
   };
   store.set("settings", normalized);
   if (normalized.lyricsModeEnabled) stopPetDrag();
@@ -852,7 +853,7 @@ function createPetWindow(): void {
       preload: PRELOAD_PATH,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       webSecurity: !IS_DEV
     }
   });
@@ -897,8 +898,8 @@ function createSettingsWindow(): void {
     height: SETTINGS_WINDOW.height,
     title: `${APP_NAME} ${text().menu.settings}`,
     resizable: true,
-    minWidth: SETTINGS_WINDOW.width,
-    maxWidth: SETTINGS_WINDOW.width,
+    minWidth: 560,
+    maxWidth: 1200,
     minHeight: 400,
     show: false,
     icon: runtimeAssetPath("tray-icon.png"),
@@ -910,7 +911,7 @@ function createSettingsWindow(): void {
       preload: PRELOAD_PATH,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       webSecurity: !IS_DEV
     }
   });
@@ -972,7 +973,10 @@ function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
           { label: labels.demoHappyReaction, click: () => triggerDemo("happy") }
         ]),
     { type: "separator" },
-    { label: labels.settings, click: createSettingsWindow }
+    { label: labels.settings, click: createSettingsWindow },
+    ...(app.isPackaged
+      ? [{ label: labels.checkForUpdates, click: () => void checkForUpdates(true) }]
+      : [])
   ];
 }
 
@@ -1926,6 +1930,73 @@ function openExternalUrl(rawUrl: string): void {
   }
 }
 
+async function checkForUpdates(manual = false): Promise<void> {
+  if (!app.isPackaged) return;
+  manualUpdateCheck = manualUpdateCheck || manual;
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch {
+    if (!manualUpdateCheck) return;
+    manualUpdateCheck = false;
+    const labels = text().system;
+    await dialog.showMessageBox({
+      type: "error",
+      title: APP_NAME,
+      message: labels.updateError
+    });
+  }
+}
+
+function scheduleUpdateChecks(): void {
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("update-available", async (info) => {
+    if (!manualUpdateCheck) return;
+    manualUpdateCheck = false;
+    await dialog.showMessageBox({
+      type: "info",
+      title: APP_NAME,
+      message: text().system.updateAvailable(info.version)
+    });
+  });
+  autoUpdater.on("update-not-available", async () => {
+    if (!manualUpdateCheck) return;
+    manualUpdateCheck = false;
+    await dialog.showMessageBox({
+      type: "info",
+      title: APP_NAME,
+      message: text().system.updateNotAvailable
+    });
+  });
+  autoUpdater.on("update-downloaded", async (info) => {
+    manualUpdateCheck = false;
+    const labels = text().system;
+    const result = await dialog.showMessageBox({
+      type: "info",
+      title: APP_NAME,
+      message: labels.updateDownloaded(info.version),
+      buttons: [labels.restartToUpdate, labels.later],
+      defaultId: 0,
+      cancelId: 1
+    });
+    if (result.response === 0) autoUpdater.quitAndInstall(false, true);
+  });
+  autoUpdater.on("error", async () => {
+    if (!manualUpdateCheck) return;
+    manualUpdateCheck = false;
+    await dialog.showMessageBox({
+      type: "error",
+      title: APP_NAME,
+      message: text().system.updateError
+    });
+  });
+
+  updateCheckTimer = setTimeout(() => void checkForUpdates(false), 30_000);
+  updateCheckInterval = setInterval(() => void checkForUpdates(false), 6 * 60 * 60 * 1000);
+}
+
 function titleLooksBusy(title: string): boolean {
   return /running|working|thinking|generating|executing|building|applying|processing|in progress|正在|运行|执行|生成|思考|处理中|…/.test(
     title.toLowerCase()
@@ -2104,21 +2175,6 @@ function compactAgentText(text: string): string {
     .trim();
   const firstSentence = plain.match(/^.{8,90}?[。！？.!?](?=\s|$)/)?.[0] ?? plain;
   return firstSentence.length > 58 ? `${firstSentence.slice(0, 56)}...` : firstSentence;
-}
-
-function extractClaudeRecap(text: string): string | null {
-  const recap = text.match(
-    /※\s*recap\s*:\s*([\s\S]*?)(?:\(\s*disable recaps in \/config\s*\)|$)/i
-  )?.[1];
-  if (!recap) return null;
-  const cleaned = recap.replace(/\s+/g, " ").trim();
-  return cleaned || null;
-}
-
-function claudePromptProgressText(prompt: string): string {
-  const recap = extractClaudeRecap(prompt);
-  if (recap) return compactAgentText(recap);
-  return "Claude Code 正在处理任务";
 }
 
 function classifyAgentProgressKind(text: string, fallback: AgentProgressKind = "working"): AgentProgressKind {
@@ -3034,55 +3090,33 @@ function collectClaudeSessionEvents(): AgentMonitorEvent[] {
 
   for (const file of files) {
     for (const line of parseJsonLinesTail(file)) {
-      const timestampMs = eventTimeMs(line.timestamp);
-      if (timestampMs === null) continue;
-      if (line.type === "last-prompt") {
-        const prompt = stringValue(line.lastPrompt);
-        const message = claudePromptProgressText(prompt);
+      const signal = parseClaudeLogRecord(line);
+      if (!signal) continue;
+
+      if (signal.kind === "working") {
         events.push({
-          id: `Claude Code:${file}:${timestampMs}:prompt:${hashText(prompt)}`,
+          id: `Claude Code:${file}:${signal.id}`,
           source: "Claude Code",
           sessionKey: `Claude Code:${file}`,
           kind: "working",
-          message,
-          progressKind: classifyAgentProgressKind(message),
+          message: signal.message || "正在执行工具",
+          progressKind: signal.progressKind,
           state: "thinking",
-          timestampMs,
-          showProgress: false
+          timestampMs: signal.timestampMs
         });
         continue;
       }
 
-      if (line.type !== "assistant") continue;
-      const message = asRecord(line.message);
-      if (!message) continue;
-      const stopReason = stringValue(message.stop_reason);
-      const text = extractTextFromContent(message.content, "text");
-
-      if (stopReason === "end_turn") {
-        const classified = classifyAgentText(text);
-        if (classified) {
-          const uuid = stringValue(line.uuid) || hashText(text);
-          events.push({
-            ...makeAgentEvent("Claude Code", file, timestampMs, text, classified),
-            id: `Claude Code:${file}:${uuid}:${classified.kind}`
-          });
-        }
-        continue;
-      }
-
-      if (stopReason === "tool_use") {
-        events.push({
-          id: `Claude Code:${file}:${timestampMs}:tool_use:${hashText(text)}`,
-          source: "Claude Code",
-          sessionKey: `Claude Code:${file}`,
-          kind: "working",
-          message: compactAgentText(text || "正在执行工具"),
-          progressKind: classifyAgentProgressKind(text || "正在执行工具", "tool"),
-          state: "thinking",
-          timestampMs
-        });
-      }
+      const classified = classifyAgentText(signal.text) ?? {
+        kind: "complete" as const,
+        message: compactAgentText(signal.text),
+        progressKind: "complete" as const,
+        state: "waving" as const
+      };
+      events.push({
+        ...makeAgentEvent("Claude Code", file, signal.timestampMs, signal.text, classified),
+        id: `Claude Code:${file}:${signal.id}:${classified.kind}`
+      });
     }
   }
 
@@ -3907,6 +3941,13 @@ function registerIpc(): void {
     return result;
   });
   ipcMain.handle("pet:list-installed", () => getSettings().installedPets);
+  ipcMain.handle("pet:delete", async (_event, petId: string) => {
+    const result = await deleteInstalledPet(petId);
+    if (!result.ok) return result;
+    setSettings(getSettings());
+    publishSnapshot();
+    return result;
+  });
   ipcMain.on("pet:select", (_event, petId: string) => {
     setSettings({ ...getSettings(), selectedPetId: petId });
   });
@@ -3933,8 +3974,14 @@ function registerIpc(): void {
 }
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: "pawpal-asset", privileges: { bypassCSP: true, supportFetchAPI: true } },
-  { scheme: "pawpause-asset", privileges: { bypassCSP: true, supportFetchAPI: true } }
+  {
+    scheme: "pawpal-asset",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true }
+  },
+  {
+    scheme: "pawpause-asset",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true }
+  }
 ]);
 
 app.whenReady().then(() => {
@@ -3979,6 +4026,7 @@ app.whenReady().then(() => {
   scheduleDistractionDetection();
   scheduleAgentActivityMonitor();
   scheduleBatteryMonitor();
+  scheduleUpdateChecks();
   schedulePetLibraryMonitor();
   scheduleAmbientRoam();
   scheduleAmbientPose();
@@ -4017,10 +4065,12 @@ app.on("before-quit", () => {
     ambientRoamStopTimer,
     ambientPoseTimer,
     ambientPoseStopTimer,
-    agentPoseTimer
+    agentPoseTimer,
+    updateCheckTimer
   ]) {
     if (timer) clearTimeout(timer);
   }
+  if (updateCheckInterval) clearInterval(updateCheckInterval);
 });
 
 app.on("window-all-closed", () => {

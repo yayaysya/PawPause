@@ -44,6 +44,17 @@ PawPause 是一款 macOS / Windows 桌面陪伴应用。它让像素小伙伴常
 
 macOS 上分心检测和 Agent 窗口识别需要辅助功能权限。
 
+## Claude Code 接入
+
+Claude Code 不需要额外安装 PawPause hook 或 JavaScript 插件：
+
+1. 打开 PawPause 设置窗口。
+2. 在「设置 → 专注」中开启「Agent 完成提醒」。
+3. 正常运行 Claude Code。
+
+PawPause 会自动读取 `~/.claude/projects` 下的本地会话记录，并兼容新版
+`stop_sequence` 和旧版 `end_turn` 格式。macOS 辅助功能权限只在识别或唤起相关终端窗口时需要。
+
 ## Hermes（WSL）连接 PawPause（Windows）
 
 如果 Hermes 跑在 WSL 里、PawPause 跑在 Windows 上，Hermes 写事件的路径必须映射到 Windows 也能读到的位置。Windows 版 PawPause 会监听 `%APPDATA%\PawPause\agent-events\hermes.jsonl` 和 `%LOCALAPPDATA%\PawPause\agent-events\hermes.jsonl`，所以推荐在 WSL 里把 hook 输出指到其中一个挂载路径：
