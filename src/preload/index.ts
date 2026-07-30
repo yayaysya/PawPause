@@ -3,6 +3,7 @@ import type {
   AppSnapshot,
   DemoTrigger,
   InstalledPet,
+  PetDeleteResult,
   PetImportResult,
   PetLayout,
   PetState,
@@ -24,6 +25,8 @@ function onChannel<T>(channel: string, callback: (payload: T) => void): Unsubscr
 const api = {
   getSnapshot: (): Promise<AppSnapshot> => ipcRenderer.invoke("app:get-snapshot"),
   importPetPackage: (): Promise<PetImportResult> => ipcRenderer.invoke("pet:import-package"),
+  deletePet: (petId: string): Promise<PetDeleteResult> =>
+    ipcRenderer.invoke("pet:delete", petId),
   listInstalledPets: (): Promise<InstalledPet[]> => ipcRenderer.invoke("pet:list-installed"),
   selectPet: (petId: string): void => ipcRenderer.send("pet:select", petId),
   petClicked: (): void => ipcRenderer.send("pet:clicked"),

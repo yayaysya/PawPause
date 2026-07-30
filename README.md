@@ -60,6 +60,18 @@ Download installers from [Releases](https://github.com/angziii/PawPause/releases
 
 On macOS, distraction detection and Agent window recognition require Accessibility permission.
 
+## Claude Code Activity
+
+Claude Code works without an extra PawPause hook or JavaScript plugin:
+
+1. Open PawPause Settings.
+2. In **Settings → Focus**, enable **Agent Completion Alerts**.
+3. Run Claude Code normally.
+
+PawPause watches Claude Code's local session records under `~/.claude/projects` and recognizes
+both current `stop_sequence` records and older `end_turn` records. Accessibility permission on
+macOS is only needed when PawPause needs to recognize or bring the related terminal window forward.
+
 ## OpenCode Agent Hook
 
 PawPause can consume OpenCode lifecycle events through a small OpenCode plugin:
@@ -98,9 +110,16 @@ If the plugin is not installed, PawPause still watches recent Hermes session fil
 
 ### Hermes in WSL + PawPause on Windows
 
-If Hermes runs inside WSL and PawPause runs on Windows, Hermes must write events to a path that the Windows app also watches. The current PawPause Hermes hook handles this automatically, but if your Hermes process does not load environment variables correctly or PawPause still does not react, hardcode the event path in the WSL plugin.
+If Hermes runs inside WSL and PawPause runs on Windows, Hermes must write events to a path that the Windows app also watches. PawPause for Windows watches both `%APPDATA%\PawPause\agent-events\hermes.jsonl` and `%LOCALAPPDATA%\PawPause\agent-events\hermes.jsonl`, so point the WSL hook at one of those mounted Windows paths.
 
-In WSL, edit the plugin:
+Recommended WSL setup:
+
+```bash
+export PAWPAUSE_HERMES_AGENT_EVENTS="/mnt/c/Users/<WindowsUserName>/AppData/Roaming/PawPause/agent-events/hermes.jsonl"
+mkdir -p "$(dirname "$PAWPAUSE_HERMES_AGENT_EVENTS")"
+```
+
+If your shell does not load that environment variable for Hermes, edit the plugin in WSL:
 
 ```bash
 nano ~/.hermes/plugins/pawpause-agent-hook/__init__.py
@@ -111,22 +130,22 @@ Replace the whole `_output_file()` function with:
 ```python
 def _output_file() -> Path:
     # WSL -> Windows PawPause fallback.
-    return Path("/mnt/c/Users/Administrator/.local/share/pawpause/agent-events/hermes.jsonl")
+    return Path("/mnt/c/Users/<WindowsUserName>/AppData/Roaming/PawPause/agent-events/hermes.jsonl")
 ```
 
-If the Windows username is not `Administrator`, replace it in the path:
+Replace `<WindowsUserName>` with the real Windows username. PawPause also watches the Local AppData variant:
 
 ```text
-/mnt/c/Users/<WindowsUserName>/.local/share/pawpause/agent-events/hermes.jsonl
+/mnt/c/Users/<WindowsUserName>/AppData/Local/PawPause/agent-events/hermes.jsonl
 ```
 
-Then create the directory from WSL:
+For session-file fallback without the hook, expose the WSL Hermes sessions directory to Windows with a junction or symlink at `%USERPROFILE%\.hermes\sessions`. Example PowerShell command:
 
-```bash
-mkdir -p /mnt/c/Users/Administrator/.local/share/pawpause/agent-events
+```powershell
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.hermes\sessions" -Target "\\wsl.localhost\Ubuntu\home\<WslUserName>\.hermes\sessions"
 ```
 
-Finally, restart Hermes. The key point is that Hermes writes from WSL into the mounted Windows user directory, and PawPause reads the same event file from Windows.
+Finally, restart Hermes. The key point is that Hermes writes from WSL into a Windows-visible path, and PawPause reads the same event file or junction from Windows.
 
 ## Import Companions
 

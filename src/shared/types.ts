@@ -52,7 +52,7 @@ export type PetPackageManifest = {
   description?: string;
   author?: string;
   spritesheet: string;
-  source: "builtin" | "imported";
+  source: "builtin" | "imported" | "petdex";
 };
 
 export type InstalledPet = {
@@ -174,6 +174,10 @@ export type AppSnapshot = {
 
 export type PetImportResult =
   | { ok: true; pet: InstalledPet }
+  | { ok: false; error: string };
+
+export type PetDeleteResult =
+  | { ok: true }
   | { ok: false; error: string };
 
 export type DemoTrigger =
