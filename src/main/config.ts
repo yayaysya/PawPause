@@ -42,6 +42,13 @@ export const DISTRACTION_CHECK_INTERVAL_MS = 3000;
 export const DISTRACTION_WARNING_COOLDOWN_MS = 60_000;
 export const BREAK_RUN_DURATION_MS = 60_000;
 export const BREAK_RUN_TICK_MS = 16;
+/* 各提醒点"稍后"后的顺延时间，沿用原项目的取值：休息 10 分钟、喝水 15 分钟。 */
+export const BREAK_SNOOZE_MS = 10 * 60_000;
+export const HYDRATION_SNOOZE_MS = 15 * 60_000;
 export const STAND_SNOOZE_MS = 10 * 60_000;
-// 站立提醒到点时如果正有别的提醒占着气泡，只把站立提醒顺延这么久，不去重置其他计时器。
-export const STAND_BUSY_RETRY_MS = 60_000;
+/* 提醒到点时正有别的提醒占着气泡，只把这一个提醒顺延这么久，不去重置其他计时器。 */
+export const REMINDER_BUSY_RETRY_MS = 60_000;
+/* 关机期间已经过点的提醒，启动后等这么久再弹，留出窗口加载时间。 */
+export const REMINDER_OVERDUE_DELAY_MS = 60_000;
+/* 专注期间到点的提醒，专注结束后等这么久再补，避开"专注结束"气泡（约 3 秒）。 */
+export const FOCUS_END_REMINDER_DELAY_MS = 6_000;

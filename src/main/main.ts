@@ -48,7 +48,11 @@ import {
   RENDERER_HTML_PATH,
   SETTINGS_WINDOW,
   SCREEN_BLOCK_WINDOW,
-  STAND_BUSY_RETRY_MS,
+  BREAK_SNOOZE_MS,
+  FOCUS_END_REMINDER_DELAY_MS,
+  HYDRATION_SNOOZE_MS,
+  REMINDER_BUSY_RETRY_MS,
+  REMINDER_OVERDUE_DELAY_MS,
   STAND_SNOOZE_MS,
   STORE_NAME
 } from "./config";
@@ -63,6 +67,15 @@ import {
   userPetsRoot
 } from "./petPackages";
 import { createTrayImage } from "./trayIcon";
+import {
+  changedIntervalReminderKinds,
+  emptyReminderDueAt,
+  INTERVAL_REMINDER_KINDS,
+  intervalReminderMs,
+  isIntervalReminderEnabled,
+  restoreReminderDelayMs
+} from "./reminderSchedule";
+import type { IntervalReminderKind, ReminderDueAtMap } from "./reminderSchedule";
 import { copyDockIcon, DOCK_ICON_EXTENSIONS, readDockIconDataUrl, removeDockIcons } from "./dockIcon";
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, screen, shell, Tray } = electron;
@@ -83,6 +96,8 @@ type StoreSchema = {
   petDocked?: boolean;
   dockPosition?: PetPosition;
   dockIconFileName?: string;
+  /* 休息/喝水/站立下一次到点时间，重启后据此接着倒计时。 */
+  reminderDueAt?: Partial<ReminderDueAtMap>;
 };
 
 type FocusSession = {
@@ -184,17 +199,22 @@ let breakRunMovementTimer: NodeJS.Timeout | null = null;
 let screenBlockTimer: NodeJS.Timeout | null = null;
 let screenBlockCountdownTimer: NodeJS.Timeout | null = null;
 let focusWarningTimer: NodeJS.Timeout | null = null;
-let breakTimer: NodeJS.Timeout | null = null;
-let hydrationTimer: NodeJS.Timeout | null = null;
-let standTimer: NodeJS.Timeout | null = null;
+/*
+ * 休息/喝水/站立三种间隔提醒各自独立计时，只在主进程单线程里读写，不需要加锁。
+ * reminderDueAt 每次变化都写回 store；pendingAfterFocus 记录专注期间到点、等专注结束再补的提醒。
+ */
+const intervalReminderTimers: Record<IntervalReminderKind, NodeJS.Timeout | null> = {
+  break: null,
+  hydration: null,
+  stand: null
+};
+const reminderDueAt: ReminderDueAtMap = emptyReminderDueAt();
+const pendingAfterFocus = new Set<IntervalReminderKind>();
 const customReminderTimers = new Map<string, NodeJS.Timeout>();
 let focusTimer: NodeJS.Timeout | null = null;
 let distractionTimer: NodeJS.Timeout | null = null;
 let distractionStartupTimer: NodeJS.Timeout | null = null;
-let breakDueAt: number | null = null;
 let breakSnoozeDueAt: number | null = null;
-let hydrationDueAt: number | null = null;
-let standDueAt: number | null = null;
 let focusEndsAt: number | null = null;
 let screenBlockEndsAt: number | null = null;
 let bubbleTimer: NodeJS.Timeout | null = null;
@@ -217,7 +237,8 @@ let manualUpdateCheck = false;
 let breakRunVelocity: PetPosition = { x: 0, y: 0 };
 let breakRunFormatter: ((seconds: number) => string) | null = null;
 let nextBreakRunTurnAt = 0;
-let breakMutedToday = false;
+/* 点了"今天先别管我"的日期（todayKey 格式），跨天后自动失效；只在主进程单线程读写。 */
+let breakMutedDate: string | null = null;
 let dragOffset: PetPosition = { x: 0, y: 0 };
 let currentBubble: SpeechBubble | null = null;
 let petScaleOverride: number | null = null;
@@ -452,6 +473,7 @@ function text(): ReturnType<typeof i18n> {
 }
 
 function setSettings(next: Settings): void {
+  const previous = getSettings();
   const installedPets = installedPetsFromDisk();
   const selectedPetId = allPets(installedPets).some((pet) => pet.slug === next.selectedPetId)
     ? next.selectedPetId
@@ -482,8 +504,8 @@ function setSettings(next: Settings): void {
   resizePetWindowForScale(currentPetDisplayScale(normalized), Boolean(currentBubble));
   sendToAll("settings:updated", normalized);
   settingsWindow?.setTitle(`${APP_NAME} ${text().menu.settings}`);
-  scheduleReminderTimers();
-  scheduleStandTimer();
+  scheduleCustomReminderTimers();
+  for (const kind of changedIntervalReminderKinds(previous, normalized)) armIntervalReminder(kind);
   scheduleDistractionDetection();
   scheduleAgentActivityMonitor();
   stopAmbientRoam(false);
@@ -596,8 +618,20 @@ function updateStats(mutator: (stats: TodayStats) => TodayStats): void {
   publishSnapshot();
 }
 
+function isBreakMutedToday(): boolean {
+  return breakMutedDate === todayKey();
+}
+
+/* 距离明天零点的毫秒数，休息被静音时用来把下一次提醒排到明天。 */
+function msUntilTomorrow(now = new Date()): number {
+  const tomorrow = new Date(now);
+  tomorrow.setHours(24, 0, 0, 0);
+  return tomorrow.getTime() - now.getTime();
+}
+
 function resetTodayStats(): void {
-  breakMutedToday = false;
+  breakMutedDate = null;
+  armIntervalReminder("break");
   const reset = createEmptyStats();
   store.set("stats", reset);
   saveStatsToHistory(reset);
@@ -612,10 +646,10 @@ function snapshot(): AppSnapshot {
     stats: getStats(),
     statsHistory: getStatsHistory(),
     timers: {
-      breakDueAt,
+      breakDueAt: reminderDueAt.break,
       breakSnoozeDueAt,
-      hydrationDueAt,
-      standDueAt,
+      hydrationDueAt: reminderDueAt.hydration,
+      standDueAt: reminderDueAt.stand,
       focusEndsAt
     },
     distraction: distractionStatus,
@@ -1791,6 +1825,7 @@ function finishBreakRun(): void {
   screenBlockEndsAt = null;
   restorePetWindowAfterScreenBlock();
   updateStats((stats) => ({ ...stats, breaksTaken: stats.breaksTaken + 1 }));
+  armIntervalReminder("break");
   hideBubble();
   showBubble({ id: "break-run-complete", message: pick(text().bubble.breakRunComplete), autoDismissMs: 2200 });
   setPetState("breakDone");
@@ -1798,7 +1833,6 @@ function finishBreakRun(): void {
     if (!blockingMode && !focusActive) {
       hideBubble();
       setPetState("idle");
-      scheduleReminderTimers();
       scheduleAmbientPose();
     }
   }, bubbleSettleMs());
@@ -1812,8 +1846,9 @@ function startBreakRun(): void {
   stopAmbientRoam(false);
   stopAmbientPose(true);
   blockingMode = "breakRun";
-  breakDueAt = null;
-  breakSnoozeDueAt = null;
+  // 遮屏休息进行中不计时，结束时 finishBreakRun 重新排下一次
+  clearIntervalReminder("break");
+  persistReminderDueAt();
   breakRunFormatter = pick(text().bubble.breakRun);
   expandPetWindowForScreenBlock();
   setPetState("breakRunning");
@@ -1868,49 +1903,93 @@ function restorePetWindowAfterScreenBlock(): void {
   petWindow.setAlwaysOnTop(true, process.platform === "darwin" ? "floating" : "normal");
 }
 
-function scheduleReminderTimers(): void {
-  if (breakTimer) clearTimeout(breakTimer);
-  if (hydrationTimer) clearTimeout(hydrationTimer);
-  scheduleCustomReminderTimers();
-  breakDueAt = null;
-  breakSnoozeDueAt = null;
-  hydrationDueAt = null;
+/*
+ * 间隔提醒调度：每种提醒只管自己的计时器。
+ * - 完成/稍后/保存了它自己的设置时才重排，互不清零；
+ * - 到点时间写进 store，重启后由 restoreIntervalReminders 接着算。
+ * delayMs 不传时按设置的完整间隔。
+ */
+function persistReminderDueAt(): void {
+  store.set("reminderDueAt", { ...reminderDueAt });
+}
 
+function clearIntervalReminder(kind: IntervalReminderKind): void {
+  const timer = intervalReminderTimers[kind];
+  if (timer) clearTimeout(timer);
+  intervalReminderTimers[kind] = null;
+  reminderDueAt[kind] = null;
+  pendingAfterFocus.delete(kind);
+  if (kind === "break") breakSnoozeDueAt = null;
+}
+
+function armIntervalReminder(kind: IntervalReminderKind, delayMs?: number): void {
+  clearIntervalReminder(kind);
   const settings = getSettings();
-  if (settings.breakReminderEnabled && !breakMutedToday) {
-    breakDueAt = Date.now() + settings.breakIntervalMinutes * 60 * 1000;
-    breakTimer = setTimeout(
-      () => triggerBreakReminder(false),
-      settings.breakIntervalMinutes * 60 * 1000
-    );
+  /*
+   * 三种出路：
+   * 1. 设置里关掉了：只清掉，不再排程；
+   * 2. 休息提醒今天被静音：排到明天零点后再过一个完整间隔，跨天自动恢复；
+   * 3. 正常：按 delayMs 或完整间隔排程。
+   */
+  const is_enabled = isIntervalReminderEnabled(kind, settings);
+  const is_break_muted = kind === "break" && isBreakMutedToday();
+  if (is_enabled) {
+    const wait_ms = is_break_muted
+      ? msUntilTomorrow() + intervalReminderMs(kind, settings)
+      : (delayMs ?? intervalReminderMs(kind, settings));
+    reminderDueAt[kind] = Date.now() + wait_ms;
+    intervalReminderTimers[kind] = setTimeout(() => fireIntervalReminder(kind), wait_ms);
   }
-  if (settings.hydrationReminderEnabled) {
-    hydrationDueAt = Date.now() + settings.hydrationIntervalMinutes * 60 * 1000;
-    hydrationTimer = setTimeout(
-      () => triggerHydrationReminder(false),
-      settings.hydrationIntervalMinutes * 60 * 1000
-    );
-  }
+  persistReminderDueAt();
   publishSnapshot();
 }
 
-/*
- * 站立提醒独立排程：scheduleReminderTimers 会在休息、喝水完成时被反复调用，
- * 如果放在里面，每喝一次水就会把站立倒计时清零。所以这里只在启动、保存设置、
- * 站立提醒自身完成/稍后时重排。delayMs 不传时按设置的间隔。
- */
-function scheduleStandTimer(delayMs?: number): void {
-  if (standTimer) clearTimeout(standTimer);
-  standTimer = null;
-  standDueAt = null;
+function fireIntervalReminder(kind: IntervalReminderKind): void {
+  intervalReminderTimers[kind] = null;
+  if (kind === "break") triggerBreakReminder(false);
+  else if (kind === "hydration") triggerHydrationReminder(false);
+  else triggerStandReminder(false);
+}
 
-  const settings = getSettings();
-  if (settings.standReminderEnabled) {
-    const waitMs = delayMs ?? settings.standIntervalMinutes * 60 * 1000;
-    standDueAt = Date.now() + waitMs;
-    standTimer = setTimeout(() => triggerStandReminder(false), waitMs);
+/*
+ * 到点但暂时不能弹时的统一处理，返回 true 表示已经顺延、调用方不要再弹：
+ * 1. 专注中：记入 pendingAfterFocus，专注结束后补；同时按专注结束时间排一个兜底计时，重启后也不会丢；
+ * 2. 别的提醒正占着气泡：只把这一个提醒顺延 REMINDER_BUSY_RETRY_MS。
+ */
+function deferIntervalReminderIfBusy(kind: IntervalReminderKind): boolean {
+  if (focusActive) {
+    const focus_remaining_ms = Math.max(0, (focusEndsAt ?? Date.now()) - Date.now());
+    armIntervalReminder(kind, focus_remaining_ms + FOCUS_END_REMINDER_DELAY_MS);
+    pendingAfterFocus.add(kind);
+    return true;
   }
-  publishSnapshot();
+  if (blockingMode) {
+    armIntervalReminder(kind, REMINDER_BUSY_RETRY_MS);
+    return true;
+  }
+  return false;
+}
+
+/* 专注结束（完成或提前停止）时，把专注期间到点的提醒补上。 */
+function flushRemindersAfterFocus(): void {
+  const kinds = [...pendingAfterFocus];
+  pendingAfterFocus.clear();
+  for (const kind of kinds) armIntervalReminder(kind, FOCUS_END_REMINDER_DELAY_MS);
+}
+
+function restoreIntervalReminders(): void {
+  const stored = store.get("reminderDueAt") ?? {};
+  const settings = getSettings();
+  const now = Date.now();
+  for (const kind of INTERVAL_REMINDER_KINDS) {
+    const delay_ms = restoreReminderDelayMs(
+      stored[kind],
+      intervalReminderMs(kind, settings),
+      now,
+      REMINDER_OVERDUE_DELAY_MS
+    );
+    armIntervalReminder(kind, delay_ms);
+  }
 }
 
 function setDistractionStatus(partial: Partial<DistractionStatus>): void {
@@ -3935,10 +4014,13 @@ function randomPetClickReaction(): void {
 }
 
 function triggerBreakReminder(fromDemo: boolean): void {
-  if (blockingMode === "focusWarning" || blockingMode === "breakRun") return;
-  if (!fromDemo && (focusActive || breakMutedToday)) {
-    scheduleReminderTimers();
-    return;
+  if (fromDemo && blockingMode) return;
+  if (!fromDemo) {
+    if (isBreakMutedToday()) {
+      armIntervalReminder("break");
+      return;
+    }
+    if (deferIntervalReminderIfBusy("break")) return;
   }
   if (!fromDemo && getSettings().screenBlockReminderEnabled) {
     startBreakRun();
@@ -3948,8 +4030,8 @@ function triggerBreakReminder(fromDemo: boolean): void {
   stopAmbientRoam(false);
   stopAmbientPose(true);
   blockingMode = "break";
-  breakDueAt = null;
-  breakSnoozeDueAt = null;
+  clearIntervalReminder("break");
+  persistReminderDueAt();
   publishSnapshot();
   setPetState("breakPrompt");
   const labels = text();
@@ -3965,15 +4047,14 @@ function triggerBreakReminder(fromDemo: boolean): void {
 }
 
 function triggerHydrationReminder(fromDemo: boolean): void {
-  if (blockingMode || (!fromDemo && focusActive)) {
-    scheduleReminderTimers();
-    return;
-  }
+  if (fromDemo && blockingMode) return;
+  if (!fromDemo && deferIntervalReminderIfBusy("hydration")) return;
   ensurePetWindowVisible();
   stopAmbientRoam(false);
   stopAmbientPose(true);
   blockingMode = "hydration";
-  hydrationDueAt = null;
+  clearIntervalReminder("hydration");
+  persistReminderDueAt();
   publishSnapshot();
   setPetState("hydrationPrompt");
   const labels = text();
@@ -3988,25 +4069,15 @@ function triggerHydrationReminder(fromDemo: boolean): void {
 }
 
 function triggerStandReminder(fromDemo: boolean): void {
-  /*
-   * 三种出路，按优先级：
-   * 1. 专注中（非演示）：不打断，按完整间隔重新计时；
-   * 2. 别的提醒正占着气泡：只顺延站立提醒一小会儿，不动其他计时器；
-   * 3. 正常弹出站立提醒。
-   */
-  if (!fromDemo && focusActive) {
-    scheduleStandTimer();
-    return;
-  }
-  if (blockingMode) {
-    if (!fromDemo) scheduleStandTimer(STAND_BUSY_RETRY_MS);
-    return;
-  }
+  // 专注中或被别的提醒占着时顺延，见 deferIntervalReminderIfBusy
+  if (fromDemo && blockingMode) return;
+  if (!fromDemo && deferIntervalReminderIfBusy("stand")) return;
   ensurePetWindowVisible();
   stopAmbientRoam(false);
   stopAmbientPose(true);
   blockingMode = "stand";
-  standDueAt = null;
+  clearIntervalReminder("stand");
+  persistReminderDueAt();
   publishSnapshot();
   setPetState("standPrompt");
   const labels = text();
@@ -4179,6 +4250,7 @@ function stopFocusMode(completed: boolean): void {
   }
   focusEndsAt = null;
   scheduleDistractionDetection();
+  flushRemindersAfterFocus();
   updateStats((stats) => ({
     ...stats,
     focusMinutes: stats.focusMinutes + elapsedMinutes
@@ -4240,10 +4312,8 @@ function handleBubbleAction(actionId: string): void {
     screenBlockEndsAt = null;
     restorePetWindowAfterScreenBlock();
     resumeLongTermState();
-    if (breakTimer) clearTimeout(breakTimer);
-    breakDueAt = Date.now() + 10 * 60 * 1000;
-    breakSnoozeDueAt = breakDueAt;
-    breakTimer = setTimeout(() => triggerBreakReminder(false), 10 * 60 * 1000);
+    armIntervalReminder("break", BREAK_SNOOZE_MS);
+    breakSnoozeDueAt = reminderDueAt.break;
     publishSnapshot();
     return;
   }
@@ -4253,23 +4323,20 @@ function handleBubbleAction(actionId: string): void {
     } else {
       updateStats((stats) => ({ ...stats, breaksTaken: stats.breaksTaken + 1 }));
       resumeLongTermState();
-      scheduleReminderTimers();
+      armIntervalReminder("break");
     }
     return;
   }
   if (actionId === "break:snooze") {
     resumeLongTermState();
-    if (breakTimer) clearTimeout(breakTimer);
-    breakDueAt = Date.now() + 10 * 60 * 1000;
-    breakSnoozeDueAt = breakDueAt;
-    breakTimer = setTimeout(() => triggerBreakReminder(false), 10 * 60 * 1000);
+    armIntervalReminder("break", BREAK_SNOOZE_MS);
+    breakSnoozeDueAt = reminderDueAt.break;
     publishSnapshot();
     return;
   }
   if (actionId === "break:mute") {
-    breakMutedToday = true;
-    breakDueAt = null;
-    breakSnoozeDueAt = null;
+    breakMutedDate = todayKey();
+    armIntervalReminder("break");
     blockingMode = null;
     sendToAll("app:snapshot", snapshot());
     setPetState("sad");
@@ -4279,6 +4346,7 @@ function handleBubbleAction(actionId: string): void {
   }
   if (actionId === "hydration:done") {
     updateStats((stats) => ({ ...stats, watersLogged: stats.watersLogged + 1 }));
+    armIntervalReminder("hydration");
     blockingMode = null;
     sendToAll("app:snapshot", snapshot());
     setPetState("drinking");
@@ -4290,17 +4358,13 @@ function handleBubbleAction(actionId: string): void {
       setTimeout(() => {
         hideBubble();
         setPetState(focusActive ? "focusGuard" : "idle");
-        scheduleReminderTimers();
       }, bubbleSettleMs());
     }, 2400);
     return;
   }
   if (actionId === "hydration:snooze") {
     resumeLongTermState();
-    if (hydrationTimer) clearTimeout(hydrationTimer);
-    hydrationDueAt = Date.now() + 15 * 60 * 1000;
-    hydrationTimer = setTimeout(() => triggerHydrationReminder(false), 15 * 60 * 1000);
-    publishSnapshot();
+    armIntervalReminder("hydration", HYDRATION_SNOOZE_MS);
     return;
   }
   if (actionId === "stand:done") {
@@ -4309,7 +4373,7 @@ function handleBubbleAction(actionId: string): void {
     sendToAll("app:snapshot", snapshot());
     setPetState("standDone");
     showBubble({ id: "stand-complete", message: pick(text().bubble.standDone), autoDismissMs: 1800 });
-    scheduleStandTimer();
+    armIntervalReminder("stand");
     setTimeout(() => {
       if (blockingMode) return;
       resumeLongTermState();
@@ -4318,7 +4382,7 @@ function handleBubbleAction(actionId: string): void {
   }
   if (actionId === "stand:snooze") {
     resumeLongTermState();
-    scheduleStandTimer(STAND_SNOOZE_MS);
+    armIntervalReminder("stand", STAND_SNOOZE_MS);
     return;
   }
   if (actionId === "focus:back") {
@@ -4455,8 +4519,8 @@ app.whenReady().then(() => {
   petDocked = store.get("petDocked", false);
   createPetWindow();
   createTray();
-  scheduleReminderTimers();
-  scheduleStandTimer();
+  scheduleCustomReminderTimers();
+  restoreIntervalReminders();
   scheduleDistractionDetection();
   scheduleAgentActivityMonitor();
   scheduleBatteryMonitor();
@@ -4482,9 +4546,7 @@ app.on("before-quit", () => {
     screenBlockTimer,
     screenBlockCountdownTimer,
     focusWarningTimer,
-    breakTimer,
-    hydrationTimer,
-    standTimer,
+    ...Object.values(intervalReminderTimers),
     dockRedockTimer,
     dockDragTimer,
     dockDragSafetyTimer,
