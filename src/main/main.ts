@@ -10,6 +10,7 @@ import {
   DEFAULT_CUSTOM_REMINDER_COUNTDOWN_LEAD_MINUTES,
   DEFAULT_CUSTOM_REMINDER_DUE_SCALE_MULTIPLIER,
   DEFAULT_SETTINGS,
+  normalizeStats,
   todayKey
 } from "../shared/constants";
 import { allPets } from "../shared/bundledPets";
@@ -21,6 +22,7 @@ import type {
   CustomReminder,
   DistractionStatus,
   DemoTrigger,
+  DockIconImportResult,
   PetFacing,
   PetLayout,
   PetRoamDirection,
@@ -36,12 +38,18 @@ import {
   BREAK_RUN_TICK_MS,
   DISTRACTION_CHECK_INTERVAL_MS,
   DISTRACTION_WARNING_COOLDOWN_MS,
+  DOCK_EDGE_SNAP_PX,
+  DOCK_ICON_MAX_BYTES,
+  DOCK_REDOCK_DELAY_MS,
+  DOCK_WINDOW,
   IS_DEV,
   PET_WINDOW,
   PRELOAD_PATH,
   RENDERER_HTML_PATH,
   SETTINGS_WINDOW,
   SCREEN_BLOCK_WINDOW,
+  STAND_BUSY_RETRY_MS,
+  STAND_SNOOZE_MS,
   STORE_NAME
 } from "./config";
 import { classifyDistraction, isPermissionError, readActiveWindow } from "./distraction";
@@ -55,6 +63,7 @@ import {
   userPetsRoot
 } from "./petPackages";
 import { createTrayImage } from "./trayIcon";
+import { copyDockIcon, DOCK_ICON_EXTENSIONS, readDockIconDataUrl, removeDockIcons } from "./dockIcon";
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, screen, shell, Tray } = electron;
 const { autoUpdater } = updater;
@@ -70,6 +79,10 @@ type StoreSchema = {
   statsHistory: StatsHistory;
   petPosition?: PetPosition;
   focusSession?: FocusSession;
+  /* 收纳状态和小图标位置不放进 Settings：改它们不该触发提醒计时器重排。 */
+  petDocked?: boolean;
+  dockPosition?: PetPosition;
+  dockIconFileName?: string;
 };
 
 type FocusSession = {
@@ -146,6 +159,18 @@ const store = new Store<StoreSchema>({
 });
 
 let petWindow: Electron.BrowserWindow | null = null;
+let dockWindow: Electron.BrowserWindow | null = null;
+/*
+ * 收纳相关状态，只在主进程单线程里读写，不需要加锁。
+ * petDocked：用户选择了收纳，持久化到 store，重启后保持；
+ * dockPeeking：收纳中因提醒临时展开，提醒处理完由 scheduleRedock 缩回后清零。
+ */
+let petDocked = false;
+let dockPeeking = false;
+let dockRedockTimer: NodeJS.Timeout | null = null;
+let dockDragTimer: NodeJS.Timeout | null = null;
+let dockDragSafetyTimer: NodeJS.Timeout | null = null;
+let dockDragOffsetY = 0;
 let settingsWindow: Electron.BrowserWindow | null = null;
 let tray: Electron.Tray | null = null;
 let petState: PetState = "idle";
@@ -161,6 +186,7 @@ let screenBlockCountdownTimer: NodeJS.Timeout | null = null;
 let focusWarningTimer: NodeJS.Timeout | null = null;
 let breakTimer: NodeJS.Timeout | null = null;
 let hydrationTimer: NodeJS.Timeout | null = null;
+let standTimer: NodeJS.Timeout | null = null;
 const customReminderTimers = new Map<string, NodeJS.Timeout>();
 let focusTimer: NodeJS.Timeout | null = null;
 let distractionTimer: NodeJS.Timeout | null = null;
@@ -168,6 +194,7 @@ let distractionStartupTimer: NodeJS.Timeout | null = null;
 let breakDueAt: number | null = null;
 let breakSnoozeDueAt: number | null = null;
 let hydrationDueAt: number | null = null;
+let standDueAt: number | null = null;
 let focusEndsAt: number | null = null;
 let screenBlockEndsAt: number | null = null;
 let bubbleTimer: NodeJS.Timeout | null = null;
@@ -456,6 +483,7 @@ function setSettings(next: Settings): void {
   sendToAll("settings:updated", normalized);
   settingsWindow?.setTitle(`${APP_NAME} ${text().menu.settings}`);
   scheduleReminderTimers();
+  scheduleStandTimer();
   scheduleDistractionDetection();
   scheduleAgentActivityMonitor();
   stopAmbientRoam(false);
@@ -465,7 +493,12 @@ function setSettings(next: Settings): void {
 }
 
 function getStatsHistory(): StatsHistory {
-  return store.get("statsHistory", {});
+  const history = store.get("statsHistory", {});
+  const normalized: StatsHistory = {};
+  for (const [date, stats] of Object.entries(history)) {
+    normalized[date] = normalizeStats(stats, date);
+  }
+  return normalized;
 }
 
 function isSameStats(left: TodayStats | undefined, right: TodayStats): boolean {
@@ -474,6 +507,7 @@ function isSameStats(left: TodayStats | undefined, right: TodayStats): boolean {
       left.date === right.date &&
       left.breaksTaken === right.breaksTaken &&
       left.watersLogged === right.watersLogged &&
+      left.standsLogged === right.standsLogged &&
       left.focusMinutes === right.focusMinutes &&
       left.focusWarnings === right.focusWarnings
   );
@@ -491,7 +525,7 @@ function saveStatsToHistory(stats: TodayStats): void {
 
 function getStats(): TodayStats {
   const today = todayKey();
-  const stats = store.get("stats", createEmptyStats());
+  const stats = normalizeStats(store.get("stats", createEmptyStats()), today);
   if (stats.date !== today) {
     saveStatsToHistory(stats);
     const current = getStatsHistory()[today] ?? createEmptyStats(today);
@@ -581,6 +615,7 @@ function snapshot(): AppSnapshot {
       breakDueAt,
       breakSnoozeDueAt,
       hydrationDueAt,
+      standDueAt,
       focusEndsAt
     },
     distraction: distractionStatus,
@@ -589,6 +624,9 @@ function snapshot(): AppSnapshot {
     petDisplayScale: currentPetDisplayScale(settings),
     blockingMode,
     dogVisible: Boolean(petWindow?.isVisible()),
+    petDocked,
+    dockPeeking,
+    dockIconCustom: Boolean(store.get("dockIconFileName")),
     focusActive,
     screenBlockActive: blockingMode === "breakRun" || blockingMode === "focusWarning",
     screenBlockEndsAt
@@ -713,6 +751,7 @@ function hideBubble(): void {
     bubbleResizeSettleTimer = null;
     if (renderToken !== bubbleRenderToken || currentBubble) return;
     resizePetWindowForScale(currentPetDisplayScale(), false);
+    scheduleRedock();
   }, BUBBLE_RESIZE_SETTLE_MS);
 }
 
@@ -722,7 +761,7 @@ function setPetScaleOverride(scale: number | null): void {
   publishSnapshot();
 }
 
-function rendererUrl(route: "pet" | "settings"): string {
+function rendererUrl(route: "pet" | "settings" | "dock"): string {
   const devServer = process.env.ELECTRON_RENDERER_URL;
   if (devServer) return `${devServer}#${route}`;
   return RENDERER_HTML_PATH;
@@ -734,7 +773,7 @@ function runtimeAssetPath(filename: string): string {
     : resolve(process.cwd(), "build", filename);
 }
 
-function loadRenderer(win: Electron.BrowserWindow, route: "pet" | "settings"): void {
+function loadRenderer(win: Electron.BrowserWindow, route: "pet" | "settings" | "dock"): void {
   const devServer = process.env.ELECTRON_RENDERER_URL;
   if (devServer) {
     void win.loadURL(rendererUrl(route));
@@ -863,8 +902,8 @@ function createPetWindow(): void {
     petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
   loadRenderer(petWindow, "pet");
-  petWindow.once("ready-to-show", showPetWindowInactive);
-  petWindow.webContents.once("did-finish-load", showPetWindowInactive);
+  petWindow.once("ready-to-show", showPetWindowAfterLoad);
+  petWindow.webContents.once("did-finish-load", showPetWindowAfterLoad);
   petWindow.on("show", () => {
     updateTrayMenu();
     publishSnapshot();
@@ -882,9 +921,293 @@ function createPetWindow(): void {
   });
 }
 
+function showPetWindowAfterLoad(): void {
+  // 上次退出时是收纳状态：宠物窗口照常加载好但不显示，只显示右侧小图标。
+  if (petDocked && !dockPeeking) {
+    showDockWindow();
+    return;
+  }
+  showPetWindowInactive();
+}
+
 function ensurePetWindowVisible(): void {
+  // 提醒都从这里把小伙伴叫出来；收纳中先进入临时展开，必须在创建窗口之前设好。
+  beginDockPeek();
   if (!petWindow || petWindow.isDestroyed()) createPetWindow();
   showPetWindowInactive();
+}
+
+/*
+ * 收纳到右侧：
+ * - 收纳时隐藏宠物窗口，只在屏幕右边缘显示一个小爪图标窗口；
+ * - 收纳中有提醒时临时展开（dockPeeking），提醒处理完、气泡消失后自动缩回；
+ * - 点击小爪图标取消收纳，恢复普通显示。
+ */
+function dockBounds(): Electron.Rectangle {
+  const stored = store.get("dockPosition");
+  const petBounds = petWindow && !petWindow.isDestroyed() ? petWindow.getBounds() : null;
+  // 第一次收纳时还没有记录位置，就收到宠物当前所在的那块屏幕
+  const reference =
+    stored ??
+    (petBounds
+      ? {
+          x: Math.round(petBounds.x + petBounds.width / 2),
+          y: Math.round(petBounds.y + petBounds.height / 2)
+        }
+      : null);
+  const workArea = (reference ? screen.getDisplayNearestPoint(reference) : screen.getPrimaryDisplay()).workArea;
+  const centeredY = workArea.y + Math.round((workArea.height - DOCK_WINDOW.height) / 2);
+  const y = clampNumber(
+    stored?.y ?? centeredY,
+    workArea.y,
+    workArea.y + workArea.height - DOCK_WINDOW.height
+  );
+  return {
+    x: workArea.x + workArea.width - DOCK_WINDOW.width,
+    y,
+    width: DOCK_WINDOW.width,
+    height: DOCK_WINDOW.height
+  };
+}
+
+function createDockWindow(): Electron.BrowserWindow {
+  const bounds = dockBounds();
+  const win = new BrowserWindow({
+    ...bounds,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    movable: false,
+    show: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    backgroundColor: "#00000000",
+    alwaysOnTop: true,
+    icon: runtimeAssetPath("tray-icon.png"),
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: !IS_DEV
+    }
+  });
+  win.setAlwaysOnTop(true, process.platform === "darwin" ? "floating" : "normal");
+  if (process.platform === "darwin") {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  loadRenderer(win, "dock");
+  win.on("closed", () => {
+    stopDockDrag();
+    dockWindow = null;
+  });
+  return win;
+}
+
+function showDockWindow(): void {
+  if (!dockWindow || dockWindow.isDestroyed()) dockWindow = createDockWindow();
+  const win = dockWindow;
+  win.setBounds(dockBounds(), false);
+  const reveal = () => {
+    // 加载期间用户可能已经点了展开，显示前再确认一次仍处于收纳
+    if (!petDocked || dockPeeking || win.isDestroyed()) return;
+    win.showInactive();
+    win.setAlwaysOnTop(true, process.platform === "darwin" ? "floating" : "normal");
+  };
+  if (win.webContents.isLoading()) win.once("ready-to-show", reveal);
+  else reveal();
+}
+
+function hideDockWindow(): void {
+  stopDockDrag();
+  if (dockWindow && !dockWindow.isDestroyed()) dockWindow.hide();
+}
+
+function clearRedockTimer(): void {
+  if (dockRedockTimer) {
+    clearTimeout(dockRedockTimer);
+    dockRedockTimer = null;
+  }
+}
+
+function collapseToDock(): void {
+  clearRedockTimer();
+  dockPeeking = false;
+  stopPetDrag();
+  stopAmbientRoam(false);
+  stopAmbientPose(true);
+  clearAgentPose(true);
+  if (petWindow && !petWindow.isDestroyed()) petWindow.hide();
+  showDockWindow();
+  updateTrayMenu();
+  publishSnapshot();
+}
+
+function dockPet(): void {
+  if (petDocked) return;
+  petDocked = true;
+  store.set("petDocked", true);
+  /*
+   * 两种出路：
+   * 1. 正有提醒在显示：先按"临时展开"处理，等提醒结束自动缩回，不打断用户操作；
+   * 2. 空闲：立即缩到右侧。
+   */
+  if (blockingMode || currentBubble) {
+    dockPeeking = true;
+    updateTrayMenu();
+    publishSnapshot();
+    return;
+  }
+  collapseToDock();
+}
+
+function undockPet(): void {
+  clearRedockTimer();
+  const wasDocked = petDocked;
+  petDocked = false;
+  dockPeeking = false;
+  store.set("petDocked", false);
+  hideDockWindow();
+  ensurePetWindowVisible();
+  if (wasDocked && !blockingMode && !focusActive) {
+    scheduleAmbientRoam();
+    scheduleAmbientPose();
+  }
+  updateTrayMenu();
+  publishSnapshot();
+}
+
+function beginDockPeek(): void {
+  if (!petDocked) return;
+  clearRedockTimer();
+  if (!dockPeeking) {
+    dockPeeking = true;
+    hideDockWindow();
+  }
+  // 兜底：有的展开不带气泡（例如 Agent 思考姿势），也要能自己缩回去
+  scheduleRedock();
+}
+
+function scheduleRedock(): void {
+  if (!petDocked || !dockPeeking) return;
+  clearRedockTimer();
+  dockRedockTimer = setTimeout(() => {
+    dockRedockTimer = null;
+    if (!petDocked || !dockPeeking) return;
+    // 还有提醒没处理完（遮屏休息、带按钮的气泡）就继续展开，等下一次气泡消失再检查
+    if (blockingMode || currentBubble) return;
+    collapseToDock();
+  }, DOCK_REDOCK_DELAY_MS);
+}
+
+function moveDockWithCursor(): void {
+  if (!dockWindow || dockWindow.isDestroyed()) return;
+  const current = dockWindow.getBounds();
+  const cursor = screen.getCursorScreenPoint();
+  // 只允许上下拖动，横向始终贴住当前屏幕右边缘
+  const workArea = screen.getDisplayNearestPoint({ x: current.x, y: cursor.y }).workArea;
+  const y = clampNumber(
+    cursor.y - dockDragOffsetY,
+    workArea.y,
+    workArea.y + workArea.height - DOCK_WINDOW.height
+  );
+  dockWindow.setBounds({ ...current, x: workArea.x + workArea.width - DOCK_WINDOW.width, y }, false);
+}
+
+function startDockDrag(offsetY: number): void {
+  if (!dockWindow || dockWindow.isDestroyed()) return;
+  stopDockDrag();
+  dockDragOffsetY = clampNumber(Math.round(offsetY), 0, DOCK_WINDOW.height);
+  dockDragTimer = setInterval(moveDockWithCursor, 16);
+  // 和宠物拖动一样加安全超时，防止丢了 pointerup 后图标一直跟着鼠标
+  dockDragSafetyTimer = setTimeout(stopDockDrag, 15_000);
+}
+
+function stopDockDrag(): void {
+  const wasDragging = Boolean(dockDragTimer || dockDragSafetyTimer);
+  if (dockDragTimer) {
+    clearInterval(dockDragTimer);
+    dockDragTimer = null;
+  }
+  if (dockDragSafetyTimer) {
+    clearTimeout(dockDragSafetyTimer);
+    dockDragSafetyTimer = null;
+  }
+  if (wasDragging && dockWindow && !dockWindow.isDestroyed()) {
+    const bounds = dockWindow.getBounds();
+    store.set("dockPosition", { x: bounds.x, y: bounds.y });
+  }
+}
+
+/*
+ * 用户拖动宠物松手：鼠标顶到所在屏幕右边缘时自动收纳，小爪放在松手的高度。
+ * 只在用户拖动结束时调用；隐藏窗口等内部原因停止拖动不会触发收纳。
+ */
+function finishPetDragByUser(): void {
+  const wasDragging = Boolean(dragTimer || dragSafetyTimer);
+  const cursor = screen.getCursorScreenPoint();
+  stopPetDrag();
+  if (!wasDragging || getSettings().lyricsModeEnabled) return;
+
+  const workArea = screen.getDisplayNearestPoint(cursor).workArea;
+  const right_edge_x = workArea.x + workArea.width;
+  const distance_to_edge_px = right_edge_x - cursor.x;
+  const is_at_right_edge = distance_to_edge_px <= DOCK_EDGE_SNAP_PX;
+  if (!is_at_right_edge) return;
+
+  store.set("dockPosition", {
+    x: right_edge_x - DOCK_WINDOW.width,
+    y: Math.round(cursor.y - DOCK_WINDOW.height / 2)
+  });
+  dockPet();
+}
+
+function showDockContextMenu(): void {
+  const labels = text().menu;
+  Menu.buildFromTemplate([
+    { label: labels.undockPet, click: undockPet },
+    { label: labels.settings, click: createSettingsWindow }
+  ]).popup({ window: dockWindow ?? undefined });
+}
+
+function notifyDockIconChanged(): void {
+  if (dockWindow && !dockWindow.isDestroyed()) dockWindow.webContents.send("dock:icon-updated");
+  publishSnapshot();
+}
+
+async function chooseAndImportDockIcon(): Promise<DockIconImportResult> {
+  const options: Electron.OpenDialogOptions = {
+    properties: ["openFile"],
+    filters: [{ name: "Image", extensions: DOCK_ICON_EXTENSIONS }]
+  };
+  const parent = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : null;
+  const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false, error: "import_cancelled" };
+  try {
+    const result = copyDockIcon(picked.filePaths[0], app.getPath("userData"), DOCK_ICON_MAX_BYTES);
+    if (!result.ok) {
+      console.error(`[dock] 导入收纳图标失败：${result.error}，文件 ${picked.filePaths[0]}`);
+      return result;
+    }
+    store.set("dockIconFileName", result.fileName);
+    notifyDockIconChanged();
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[dock] 复制收纳图标失败：${message}`);
+    return { ok: false, error: message };
+  }
+}
+
+function resetDockIcon(): void {
+  store.delete("dockIconFileName");
+  try {
+    removeDockIcons(app.getPath("userData"));
+  } catch (error) {
+    // 删不掉旧文件不影响使用：store 已清空，渲染层会回退到内置小爪
+    console.error(`[dock] 删除旧收纳图标失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+  notifyDockIconChanged();
 }
 
 function createSettingsWindow(): void {
@@ -942,12 +1265,17 @@ function createTray(): void {
 }
 
 function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
-  const dogVisible = Boolean(petWindow?.isVisible());
+  const dogVisible = Boolean(petWindow?.isVisible()) && !petDocked;
   const labels = text().menu;
   return [
     {
       label: dogVisible ? labels.hideDog : labels.showDog,
       click: () => {
+        // 收纳中点"显示小伙伴"等同于取消收纳
+        if (petDocked) {
+          undockPet();
+          return;
+        }
         if (!petWindow) createPetWindow();
         if (!petWindow) return;
         if (petWindow.isVisible()) petWindow.hide();
@@ -955,6 +1283,10 @@ function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
         updateTrayMenu();
         sendToAll("app:snapshot", snapshot());
       }
+    },
+    {
+      label: petDocked ? labels.undockPet : labels.dockPet,
+      click: () => (petDocked ? undockPet() : dockPet())
     },
     {
       label: focusActive ? labels.stopFocusMode : labels.startFocusMode,
@@ -969,6 +1301,7 @@ function actionMenuItems(): Electron.MenuItemConstructorOptions[] {
           { type: "separator" as const },
           { label: labels.demoBreakReminder, click: () => triggerDemo("break") },
           { label: labels.demoHydrationReminder, click: () => triggerDemo("hydration") },
+          { label: labels.demoStandReminder, click: () => triggerDemo("stand") },
           { label: labels.demoFocusWarning, click: () => triggerDemo("focusWarning") },
           { label: labels.demoHappyReaction, click: () => triggerDemo("happy") }
         ]),
@@ -1035,10 +1368,12 @@ function showPetContextMenu(): void {
           { type: "separator" as const },
           { label: labels.demoBreakReminder, click: () => triggerDemo("break") },
           { label: labels.demoHydrationReminder, click: () => triggerDemo("hydration") },
+          { label: labels.demoStandReminder, click: () => triggerDemo("stand") },
           { label: labels.demoFocusWarning, click: () => triggerDemo("focusWarning") },
           { label: labels.demoHappyReaction, click: () => triggerDemo("happy") }
         ]),
     { type: "separator" },
+    { label: labels.dockPet, click: dockPet },
     {
       label: labels.hideDog,
       click: () => {
@@ -1107,6 +1442,7 @@ function canAmbientRoam(): boolean {
   const settings = getSettings();
   return Boolean(
     petWindow?.isVisible() &&
+      !dockPeeking &&
       settings.petRoamEnabled &&
       !blockingMode &&
       !focusActive &&
@@ -1120,6 +1456,7 @@ function canAmbientRoam(): boolean {
 function canAmbientPose(): boolean {
   return Boolean(
     petWindow?.isVisible() &&
+      !dockPeeking &&
       !blockingMode &&
       !focusActive &&
       !currentBubble &&
@@ -1553,6 +1890,25 @@ function scheduleReminderTimers(): void {
       () => triggerHydrationReminder(false),
       settings.hydrationIntervalMinutes * 60 * 1000
     );
+  }
+  publishSnapshot();
+}
+
+/*
+ * 站立提醒独立排程：scheduleReminderTimers 会在休息、喝水完成时被反复调用，
+ * 如果放在里面，每喝一次水就会把站立倒计时清零。所以这里只在启动、保存设置、
+ * 站立提醒自身完成/稍后时重排。delayMs 不传时按设置的间隔。
+ */
+function scheduleStandTimer(delayMs?: number): void {
+  if (standTimer) clearTimeout(standTimer);
+  standTimer = null;
+  standDueAt = null;
+
+  const settings = getSettings();
+  if (settings.standReminderEnabled) {
+    const waitMs = delayMs ?? settings.standIntervalMinutes * 60 * 1000;
+    standDueAt = Date.now() + waitMs;
+    standTimer = setTimeout(() => triggerStandReminder(false), waitMs);
   }
   publishSnapshot();
 }
@@ -3198,11 +3554,22 @@ function clearAgentPose(restoreState: boolean): void {
   agentPoseActiveState = null;
 }
 
+/* 宠物被隐藏，或收纳着且没有因提醒临时展开，视为"收起"。 */
+function isPetTucked(): boolean {
+  if (petDocked) return !dockPeeking;
+  return !petWindow || petWindow.isDestroyed() || !petWindow.isVisible();
+}
+
+function shouldMuteAgentAlerts(): boolean {
+  return isPetTucked() && !getSettings().agentAlertsWhenTucked;
+}
+
 function showAgentWorkingPose(
   event: Pick<AgentMonitorEvent, "source" | "sessionKey" | "message" | "progressKind" | "timestampMs">
 ): void {
   if (blockingMode || focusActive) return;
   rememberAgentSession(event);
+  if (shouldMuteAgentAlerts()) return;
   ensurePetWindowVisible();
   if (!petWindow?.isVisible()) return;
   stopAmbientRoam(false);
@@ -3232,6 +3599,8 @@ function showAgentWorkingPose(
 function notifyAgentEvent(event: AgentMonitorEvent): boolean {
   if (blockingMode || currentBubble?.actions?.length) return false;
   rememberAgentSession(event);
+  // 收起时不提醒（含提示音）；返回 true 让调用方记为已处理，免得展开后补弹一串旧提醒
+  if (shouldMuteAgentAlerts()) return true;
   const now = Date.now();
   if (now - agentLastNotificationAt < 7000) return false;
   agentLastNotificationAt = now;
@@ -3242,7 +3611,8 @@ function notifyAgentEvent(event: AgentMonitorEvent): boolean {
 
   const bubbleId = `agent-${event.kind}-${event.timestampMs}`;
   playAgentCompletionSound(event);
-  setPetState(event.state);
+  // 专注中只弹气泡告知结果，不切换挥手/失败等动作，保持静止不打扰
+  if (!focusActive) setPetState(event.state);
   const displayMs = bubbleDisplayMs();
   showBubble({
     id: bubbleId,
@@ -3617,6 +3987,39 @@ function triggerHydrationReminder(fromDemo: boolean): void {
   });
 }
 
+function triggerStandReminder(fromDemo: boolean): void {
+  /*
+   * 三种出路，按优先级：
+   * 1. 专注中（非演示）：不打断，按完整间隔重新计时；
+   * 2. 别的提醒正占着气泡：只顺延站立提醒一小会儿，不动其他计时器；
+   * 3. 正常弹出站立提醒。
+   */
+  if (!fromDemo && focusActive) {
+    scheduleStandTimer();
+    return;
+  }
+  if (blockingMode) {
+    if (!fromDemo) scheduleStandTimer(STAND_BUSY_RETRY_MS);
+    return;
+  }
+  ensurePetWindowVisible();
+  stopAmbientRoam(false);
+  stopAmbientPose(true);
+  blockingMode = "stand";
+  standDueAt = null;
+  publishSnapshot();
+  setPetState("standPrompt");
+  const labels = text();
+  showBubble({
+    id: "stand",
+    message: pick(labels.bubble.standReminder),
+    actions: [
+      { id: "stand:done", label: labels.actions.standDone, kind: "primary" },
+      { id: "stand:snooze", label: labels.actions.standSnooze }
+    ]
+  });
+}
+
 function nextCustomReminderDueAt(time: string, from = Date.now()): number {
   const [hours, minutes] = time.split(":").map(Number);
   const due = new Date(from);
@@ -3802,6 +4205,7 @@ function triggerDemo(trigger: DemoTrigger): void {
   ensurePetWindowVisible();
   if (trigger === "break") triggerBreakReminder(true);
   if (trigger === "hydration") triggerHydrationReminder(true);
+  if (trigger === "stand") triggerStandReminder(true);
   if (trigger === "focusWarning") triggerFocusWarning("Twitter");
   if (trigger === "happy") happyFeedback(pick(text().bubble.woof));
 }
@@ -3899,6 +4303,24 @@ function handleBubbleAction(actionId: string): void {
     publishSnapshot();
     return;
   }
+  if (actionId === "stand:done") {
+    updateStats((stats) => ({ ...stats, standsLogged: stats.standsLogged + 1 }));
+    blockingMode = null;
+    sendToAll("app:snapshot", snapshot());
+    setPetState("standDone");
+    showBubble({ id: "stand-complete", message: pick(text().bubble.standDone), autoDismissMs: 1800 });
+    scheduleStandTimer();
+    setTimeout(() => {
+      if (blockingMode) return;
+      resumeLongTermState();
+    }, bubbleSettleMs());
+    return;
+  }
+  if (actionId === "stand:snooze") {
+    resumeLongTermState();
+    scheduleStandTimer(STAND_SNOOZE_MS);
+    return;
+  }
   if (actionId === "focus:back") {
     if (blockingMode === "focusWarning") {
       finishFocusWarning();
@@ -3961,7 +4383,7 @@ function registerIpc(): void {
   ipcMain.on("pet:drag-start", (_event, offset: { offsetX: number; offsetY: number }) =>
     startPetDrag(offset)
   );
-  ipcMain.on("pet:drag-stop", stopPetDrag);
+  ipcMain.on("pet:drag-stop", finishPetDragByUser);
   ipcMain.on("bubble:action", (_event, actionId: string) => handleBubbleAction(actionId));
   ipcMain.on("app:open-external", (_event, url: string) => openExternalUrl(url));
   ipcMain.on("settings:update", (_event, partial: Partial<Settings>) => {
@@ -3971,6 +4393,16 @@ function registerIpc(): void {
   ipcMain.on("focus:start", startFocusMode);
   ipcMain.on("focus:stop", () => stopFocusMode(false));
   ipcMain.on("stats:reset-today", resetTodayStats);
+  ipcMain.on("dock:set", (_event, docked: boolean) => (docked ? dockPet() : undockPet()));
+  ipcMain.on("dock:clicked", undockPet);
+  ipcMain.on("dock:context-menu", showDockContextMenu);
+  ipcMain.on("dock:drag-start", (_event, offsetY: number) => startDockDrag(offsetY));
+  ipcMain.on("dock:drag-stop", stopDockDrag);
+  ipcMain.handle("dock:get-icon", () =>
+    readDockIconDataUrl(store.get("dockIconFileName") ?? "", app.getPath("userData"))
+  );
+  ipcMain.handle("dock:import-icon", chooseAndImportDockIcon);
+  ipcMain.on("dock:reset-icon", resetDockIcon);
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -4020,9 +4452,11 @@ app.whenReady().then(() => {
   getStats();
   restoreFocusSession();
   registerIpc();
+  petDocked = store.get("petDocked", false);
   createPetWindow();
   createTray();
   scheduleReminderTimers();
+  scheduleStandTimer();
   scheduleDistractionDetection();
   scheduleAgentActivityMonitor();
   scheduleBatteryMonitor();
@@ -4050,6 +4484,10 @@ app.on("before-quit", () => {
     focusWarningTimer,
     breakTimer,
     hydrationTimer,
+    standTimer,
+    dockRedockTimer,
+    dockDragTimer,
+    dockDragSafetyTimer,
     focusTimer,
     distractionTimer,
     distractionStartupTimer,

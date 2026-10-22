@@ -15,6 +15,8 @@ export type PetState =
   | "hydrationPrompt"
   | "drinking"
   | "hydrationDone"
+  | "standPrompt"
+  | "standDone"
   | "focusGuard"
   | "focusAlert"
   | "focusDone"
@@ -96,7 +98,7 @@ export type PetLayout = {
   bubbleArrowX: number;
 };
 
-export type BlockingMode = "break" | "breakRun" | "hydration" | "focusWarning" | null;
+export type BlockingMode = "break" | "breakRun" | "hydration" | "stand" | "focusWarning" | null;
 
 export type Settings = {
   language: Language;
@@ -119,10 +121,14 @@ export type Settings = {
   screenBlockCoverageRatio: number;
   hydrationReminderEnabled: boolean;
   hydrationIntervalMinutes: number;
+  standReminderEnabled: boolean;
+  standIntervalMinutes: number;
   focusDurationMinutes: number;
   customReminders: CustomReminder[];
   agentActivityEnabled: boolean;
   agentCompletionSoundEnabled: boolean;
+  /* 小伙伴被隐藏或收纳到右侧时，Claude/Codex 等 Agent 活动是否还弹出提醒；休息/喝水/站立提醒不受影响。 */
+  agentAlertsWhenTucked: boolean;
   distractionDetectionEnabled: boolean;
   distractionGraceSeconds: number;
   distractionBlockedApps: string[];
@@ -133,6 +139,7 @@ export type TodayStats = {
   date: string;
   breaksTaken: number;
   watersLogged: number;
+  standsLogged: number;
   focusMinutes: number;
   focusWarnings: number;
 };
@@ -143,6 +150,7 @@ export type TimerStatus = {
   breakDueAt: number | null;
   breakSnoozeDueAt: number | null;
   hydrationDueAt: number | null;
+  standDueAt: number | null;
   focusEndsAt: number | null;
 };
 
@@ -168,12 +176,21 @@ export type AppSnapshot = {
   blockingMode: BlockingMode;
   focusActive: boolean;
   dogVisible: boolean;
+  /* 收纳状态：petDocked 表示用户选择了收纳；dockPeeking 表示收纳中因提醒临时展开，处理完会自动缩回。 */
+  petDocked: boolean;
+  dockPeeking: boolean;
+  /* 是否使用了用户导入的收纳图标，false 表示内置小爪图标。 */
+  dockIconCustom: boolean;
   screenBlockActive: boolean;
   screenBlockEndsAt: number | null;
 };
 
 export type PetImportResult =
   | { ok: true; pet: InstalledPet }
+  | { ok: false; error: string };
+
+export type DockIconImportResult =
+  | { ok: true }
   | { ok: false; error: string };
 
 export type PetDeleteResult =
@@ -183,6 +200,7 @@ export type PetDeleteResult =
 export type DemoTrigger =
   | "break"
   | "hydration"
+  | "stand"
   | "focusWarning"
   | "happy";
 

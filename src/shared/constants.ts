@@ -24,10 +24,13 @@ export const DEFAULT_SETTINGS: Settings = {
   screenBlockCoverageRatio: 0.4,
   hydrationReminderEnabled: true,
   hydrationIntervalMinutes: 90,
+  standReminderEnabled: true,
+  standIntervalMinutes: 60,
   focusDurationMinutes: 25,
   customReminders: [],
   agentActivityEnabled: true,
   agentCompletionSoundEnabled: true,
+  agentAlertsWhenTucked: false,
   distractionDetectionEnabled: false,
   distractionGraceSeconds: 8,
   distractionBlockedApps: [
@@ -81,7 +84,13 @@ export function createEmptyStats(date = todayKey()): TodayStats {
     date,
     breaksTaken: 0,
     watersLogged: 0,
+    standsLogged: 0,
     focusMinutes: 0,
     focusWarnings: 0
   };
+}
+
+// 旧版本存档里没有新加的统计字段（例如 standsLogged），读取时用 0 补齐，避免累加出 NaN。
+export function normalizeStats(stats: Partial<TodayStats> | undefined, date = todayKey()): TodayStats {
+  return { ...createEmptyStats(date), ...stats };
 }

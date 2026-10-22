@@ -6,6 +6,7 @@ const initialStats: TodayStats = {
   date: "",
   breaksTaken: 0,
   watersLogged: 0,
+  standsLogged: 0,
   focusMinutes: 0,
   focusWarnings: 0
 };
@@ -19,6 +20,7 @@ export function useSnapshot(): AppSnapshot {
       breakDueAt: null,
       breakSnoozeDueAt: null,
       hydrationDueAt: null,
+      standDueAt: null,
       focusEndsAt: null
     },
     distraction: {
@@ -36,6 +38,9 @@ export function useSnapshot(): AppSnapshot {
     blockingMode: null,
     focusActive: false,
     dogVisible: true,
+    petDocked: false,
+    dockPeeking: false,
+    dockIconCustom: false,
     screenBlockActive: false,
     screenBlockEndsAt: null
   });

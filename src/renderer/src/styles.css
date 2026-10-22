@@ -32,6 +32,98 @@ textarea {
   font: inherit;
 }
 
+/* 收纳到右侧的小爪标签：贴住屏幕右边缘，只有左侧是圆角。 */
+.dock-shell {
+  align-items: center;
+  background: transparent;
+  display: flex;
+  height: 100vh;
+  justify-content: flex-end;
+  width: 100vw;
+}
+
+.dock-tab {
+  align-items: center;
+  background: rgba(255, 250, 243, 0.92);
+  border: 1px solid rgba(45, 38, 31, 0.16);
+  border-radius: 14px 0 0 14px;
+  border-right: none;
+  box-shadow: -2px 2px 8px rgba(0, 0, 0, 0.16);
+  color: #c9722f;
+  cursor: pointer;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  padding: 0 0 0 2px;
+  touch-action: none;
+  transition: background 0.15s ease;
+  width: 100%;
+}
+
+.dock-tab:hover {
+  background: rgba(255, 244, 228, 1);
+}
+
+.dock-tab__paw {
+  fill: currentColor;
+  height: 24px;
+  width: 24px;
+}
+
+.dock-tab__image {
+  height: 28px;
+  object-fit: contain;
+  pointer-events: none;
+  width: 28px;
+}
+
+.dock-icon-preview {
+  align-items: center;
+  border: 1px solid rgba(45, 38, 31, 0.16);
+  border-radius: 8px;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  overflow: hidden;
+  width: 32px;
+}
+
+.dock-icon-preview img {
+  height: 24px;
+  object-fit: contain;
+  width: 24px;
+}
+
+.dock-icon-preview .dock-tab__paw {
+  color: #c9722f;
+  height: 20px;
+  width: 20px;
+}
+
+.dock-icon-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+@media (prefers-color-scheme: dark) {
+  .dock-tab {
+    background: rgba(38, 32, 27, 0.92);
+    border-color: rgba(242, 236, 228, 0.18);
+    color: #f0a465;
+  }
+
+  .dock-tab:hover {
+    background: rgba(52, 44, 37, 1);
+  }
+
+  .dock-icon-preview {
+    border-color: rgba(242, 236, 228, 0.18);
+  }
+}
+
 .pet-shell {
   --pet-scale: 1;
   --pet-display-scale: var(--pet-scale);
@@ -235,6 +327,18 @@ textarea {
   --pet-render-scale: 0.28;
 }
 
+/* 静止：停在当前行第一帧，同时去掉按钮上的摆动动画。 */
+.pet-shell.is-still .sprite-pet {
+  animation: none;
+  background-position: 0 var(--sprite-y);
+}
+
+.pet-shell.is-still .pet-button,
+.pet-shell.is-still .fallback-pet,
+.pet-shell.is-still .fallback-pet * {
+  animation: none;
+}
+
 @keyframes sprite-pet-state {
   from {
     background-position: 0 var(--sprite-y);
@@ -260,6 +364,7 @@ textarea {
 .state-happy,
 .state-breakDone,
 .state-hydrationDone,
+.state-standDone,
 .state-focusDone,
 .state-waving,
 .state-jumping {
@@ -267,6 +372,7 @@ textarea {
 }
 
 .state-breakPrompt,
+.state-standPrompt,
 .state-reviewing {
   animation: pet-knock 0.42s ease-in-out infinite;
 }
@@ -722,7 +828,8 @@ textarea {
 .prefs__stats {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* 休息、喝水、站立、专注、分心共 5 张卡片 */
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .prefs__trends {

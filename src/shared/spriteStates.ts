@@ -34,13 +34,15 @@ export function mapPetStateToPetdexState(state: PetState): PetdexStateId {
   if (
     state === "breakDone" ||
     state === "hydrationDone" ||
+    state === "standDone" ||
     state === "focusDone"
   ) {
     return "waving";
   }
+  if (state === "focusGuard") return "idle";
   if (
     state === "breakPrompt" ||
-    state === "focusGuard"
+    state === "standPrompt"
   ) {
     return "review";
   }

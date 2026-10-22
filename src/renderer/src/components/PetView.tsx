@@ -68,6 +68,8 @@ export function PetView(): JSX.Element {
   }, []);
 
   const state = snapshot.petState;
+  // 专注守护时完全静止，避免精灵帧动画和 CSS 摆动分散注意力
+  const isStill = state === "focusGuard";
   const altText = `PawPause ${state}`;
   const usesDirectionalSprite = state === "runningLeft" || state === "runningRight";
   const facingClass = usesDirectionalSprite
@@ -152,7 +154,7 @@ export function PetView(): JSX.Element {
 
   return (
     <main
-      className={`pet-shell${snapshot.screenBlockActive ? " is-screen-block" : ""}${lyricsModeEnabled ? " is-lyrics-mode" : ""}`}
+      className={`pet-shell${snapshot.screenBlockActive ? " is-screen-block" : ""}${lyricsModeEnabled ? " is-lyrics-mode" : ""}${isStill ? " is-still" : ""}`}
       aria-label="PawPause desktop pet"
       dir={resolveLanguage(snapshot.settings.language) === "ar" ? "rtl" : "ltr"}
       style={

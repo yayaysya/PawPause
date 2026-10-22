@@ -17,11 +17,12 @@ import type {
 import { getSelectedPetAsset } from "../assets";
 import { distractionHelp, formatDistractionState, formatTimer, formatTimestamp, localeFor } from "../format";
 import { useNow, useSnapshot } from "../hooks";
+import { PawIcon } from "./DockView";
 
 type SettingsCopy = ReturnType<typeof i18n>["settings"];
 type StatsRange = "day" | "month" | "all";
 type PrefsPage = "stats" | "pets" | "reminders" | "settings";
-type StatsMetric = "breaksTaken" | "watersLogged" | "focusMinutes" | "focusWarnings";
+type StatsMetric = "breaksTaken" | "watersLogged" | "standsLogged" | "focusMinutes" | "focusWarnings";
 type StatsTrendPoint = TodayStats & {
   label: string;
 };
@@ -506,6 +507,7 @@ function addStats(left: TodayStats, right: TodayStats): TodayStats {
     date: left.date || right.date,
     breaksTaken: left.breaksTaken + right.breaksTaken,
     watersLogged: left.watersLogged + right.watersLogged,
+    standsLogged: left.standsLogged + right.standsLogged,
     focusMinutes: left.focusMinutes + right.focusMinutes,
     focusWarnings: left.focusWarnings + right.focusWarnings
   };
@@ -516,6 +518,7 @@ function emptyStats(date: string): TodayStats {
     date,
     breaksTaken: 0,
     watersLogged: 0,
+    standsLogged: 0,
     focusMinutes: 0,
     focusWarnings: 0
   };
@@ -684,6 +687,13 @@ export function SettingsView(): JSX.Element {
   const [page, setPage] = useState<PrefsPage>("stats");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [dockIconUrl, setDockIconUrl] = useState<string | null>(null);
+  const [dockIconStatus, setDockIconStatus] = useState<string | null>(null);
+
+  // 收纳图标换过（dockIconCustom 变化）时重新取预览图
+  useEffect(() => {
+    void window.pawpause.getDockIcon().then(setDockIconUrl);
+  }, [snapshot.dockIconCustom]);
   const [newReminderTitle, setNewReminderTitle] = useState("");
   const [newReminderTime, setNewReminderTime] = useState("11:30");
   const now = useNow();
@@ -778,6 +788,16 @@ export function SettingsView(): JSX.Element {
     updateCustomReminders(draft.customReminders.filter((reminder) => reminder.id !== reminderId));
   }
 
+  async function importDockIcon(): Promise<void> {
+    setDockIconStatus(null);
+    const result = await window.pawpause.importDockIcon();
+    if (!result.ok && result.error !== "import_cancelled") {
+      setDockIconStatus(`${labels.dockIconImportError}: ${result.error}`);
+    }
+    // 成功时主进程会推送新的 snapshot，预览由上面的 effect 刷新；这里再取一次覆盖 dockIconCustom 未变化（换成另一张自定义图）的情况
+    if (result.ok) setDockIconUrl(await window.pawpause.getDockIcon());
+  }
+
   async function importPet(): Promise<void> {
     setImportStatus(null);
     const result = await window.pawpause.importPetPackage();
@@ -837,6 +857,7 @@ export function SettingsView(): JSX.Element {
           <div className="prefs__stats">
             <StatCard label={labels.breaks} value={statsForRange.breaksTaken} unit={labels.countUnit} />
             <StatCard label={labels.waters} value={statsForRange.watersLogged} unit={labels.countUnit} />
+            <StatCard label={labels.stands} value={statsForRange.standsLogged} unit={labels.countUnit} />
             <StatCard label={labels.focusMin} value={statsForRange.focusMinutes} unit={labels.minuteUnit} />
             <StatCard label={labels.warnings} value={statsForRange.focusWarnings} unit={labels.countUnit} />
           </div>
@@ -850,6 +871,12 @@ export function SettingsView(): JSX.Element {
             <StatsLineChart
               title={labels.waters}
               metric="watersLogged"
+              points={trendPoints}
+              unit={labels.countUnit}
+            />
+            <StatsLineChart
+              title={labels.stands}
+              metric="standsLogged"
               points={trendPoints}
               unit={labels.countUnit}
             />
@@ -1004,6 +1031,43 @@ export function SettingsView(): JSX.Element {
 
           <section className="prefs__group">
             <h2 className="prefs__group-title">{labels.appearance}</h2>
+            <Row
+              label={labels.dockPet}
+              hint={labels.dockPetHelp}
+              control={
+                <ToggleControl
+                  checked={snapshot.petDocked}
+                  onChange={(docked) => window.pawpause.setPetDocked(docked)}
+                  ariaLabel={labels.dockPet}
+                />
+              }
+            />
+            <Row
+              label={labels.dockIcon}
+              hint={dockIconStatus ?? labels.dockIconHelp}
+              control={
+                <div className="dock-icon-controls">
+                  <span className="dock-icon-preview">
+                    {dockIconUrl ? <img src={dockIconUrl} alt="" /> : <PawIcon />}
+                  </span>
+                  <button type="button" className="pref-chip-button" onClick={() => void importDockIcon()}>
+                    {labels.dockIconImport}
+                  </button>
+                  {snapshot.dockIconCustom ? (
+                    <button
+                      type="button"
+                      className="pref-chip-button"
+                      onClick={() => {
+                        setDockIconStatus(null);
+                        window.pawpause.resetDockIcon();
+                      }}
+                    >
+                      {labels.dockIconReset}
+                    </button>
+                  ) : null}
+                </div>
+              }
+            />
             <Row
               label={labels.petSize}
               control={
@@ -1189,6 +1253,28 @@ export function SettingsView(): JSX.Element {
             />
           }
         />
+        <Row
+          label={labels.enableStandReminder}
+          control={
+            <ToggleControl
+              checked={draft.standReminderEnabled}
+              onChange={(standReminderEnabled) => updateDraft({ standReminderEnabled })}
+              ariaLabel={labels.enableStandReminder}
+            />
+          }
+        />
+        <Row
+          label={labels.standInterval}
+          control={
+            <NumberControl
+              value={draft.standIntervalMinutes}
+              min={1}
+              max={240}
+              unit={labels.minuteUnit}
+              onChange={(standIntervalMinutes) => updateDraft({ standIntervalMinutes })}
+            />
+          }
+        />
       </section>
 
       <section className="prefs__group">
@@ -1225,6 +1311,17 @@ export function SettingsView(): JSX.Element {
                 updateDraft({ agentCompletionSoundEnabled })
               }
               ariaLabel={labels.enableAgentCompletionSound}
+            />
+          }
+        />
+        <Row
+          label={labels.agentAlertsWhenTucked}
+          hint={labels.agentAlertsWhenTuckedHelp}
+          control={
+            <ToggleControl
+              checked={draft.agentAlertsWhenTucked}
+              onChange={(agentAlertsWhenTucked) => updateDraft({ agentAlertsWhenTucked })}
+              ariaLabel={labels.agentAlertsWhenTucked}
             />
           }
         />
@@ -1298,6 +1395,7 @@ export function SettingsView(): JSX.Element {
           <div className="test-tools">
             <DemoChip trigger="break" label={labels.demoBreak} />
             <DemoChip trigger="hydration" label={labels.demoWater} />
+            <DemoChip trigger="stand" label={labels.demoStand} />
             <DemoChip trigger="focusWarning" label={labels.demoFocusWarning} />
             <DemoChip trigger="happy" label={labels.demoHappy} />
             <button type="button" className="pref-chip-button" onClick={window.pawpause.resetToday}>
@@ -1368,6 +1466,10 @@ export function SettingsView(): JSX.Element {
               <DiagCard
                 label={labels.water}
                 value={formatTimer(snapshot.timers.hydrationDueAt, now, language, labels)}
+              />
+              <DiagCard
+                label={labels.stand}
+                value={formatTimer(snapshot.timers.standDueAt, now, language, labels)}
               />
               <DiagCard
                 label={labels.focusEnd}

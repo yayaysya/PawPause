@@ -72,6 +72,17 @@ const CORE_I18N = {
         "喝饱啦！",
         "汪，水真好喝"
       ],
+      standReminder: [
+        "坐了好久啦，站起来伸个懒腰吧",
+        "腿要坐麻啦！站起来活动一下~",
+        "起来站一会儿嘛，我陪你",
+        "站起来看看窗外吧，眼睛也歇歇"
+      ],
+      standDone: [
+        "站起来真棒！",
+        "伸懒腰~舒服",
+        "汪！腰都直了"
+      ],
       customReminder: [
         (title: string) => `提醒：${title}`,
         (title: string) => `${title} 时间到啦`
@@ -160,6 +171,8 @@ const CORE_I18N = {
       breakMute: "今天先别管我",
       hydrationDone: "我喝水了",
       hydrationSnooze: "稍后提醒",
+      standDone: "站好了",
+      standSnooze: "10 分钟后提醒",
       focusBack: "回去工作",
       focusEnd: "结束专注",
       customReminderDone: "知道了"
@@ -171,6 +184,9 @@ const CORE_I18N = {
       stopFocusMode: "停止专注模式",
       demoBreakReminder: "演示：休息提醒",
       demoHydrationReminder: "演示：喝水提醒",
+      demoStandReminder: "演示：站立提醒",
+      dockPet: "收纳到右侧",
+      undockPet: "展开小伙伴",
       demoFocusWarning: "演示：分心提醒",
       demoHappyReaction: "演示：开心反馈",
       settings: "设置",
@@ -241,10 +257,21 @@ const CORE_I18N = {
       breakInterval: "休息间隔",
       enableHydrationReminder: "开启喝水提醒",
       hydrationInterval: "喝水间隔",
+      enableStandReminder: "开启站立提醒",
+      standInterval: "站立间隔",
       focus: "专注",
       focusDuration: "专注时长",
       enableAgentActivity: "Agent 完成提醒",
       enableAgentCompletionSound: "Agent 完成提示音",
+      agentAlertsWhenTucked: "隐藏/收纳时也提醒 Agent",
+      agentAlertsWhenTuckedHelp: "关闭后，小伙伴隐藏或收纳在右侧时，Claude Code、Codex 等对话的进度和完成提醒不再弹出，也不播放提示音。休息、喝水、站立提醒不受影响。",
+      dockPet: "收纳到屏幕右侧",
+      dockPetHelp: "只在屏幕右边缘留一个小爪图标，可上下拖动；点击展开。收纳中到点提醒会自动出来，处理完再缩回。",
+      dockIcon: "收纳图标",
+      dockIconHelp: "支持 PNG、JPG、WebP、GIF、SVG，不超过 2MB，建议使用正方形透明背景图。",
+      dockIconImport: "更换图标",
+      dockIconReset: "恢复小爪",
+      dockIconImportError: "图标导入失败",
       enableDistractionDetection: "开启分心检测",
       detectionGrace: "检测宽限时间",
       blockedApps: "屏蔽应用",
@@ -256,6 +283,7 @@ const CORE_I18N = {
       statsHeading: "统计",
       breaks: "休息",
       waters: "喝水",
+      stands: "站立",
       focusMin: "专注",
       warnings: "分心",
       companionDays: "陪伴天数",
@@ -287,11 +315,13 @@ const CORE_I18N = {
       timers: "计时器",
       break: "休息",
       water: "喝水",
+      stand: "站立",
       focusEnd: "专注结束",
       updated: "更新",
       demo: "演示",
       demoBreak: "休息",
       demoWater: "喝水",
+      demoStand: "站立",
       demoFocusWarning: "分心提醒",
       demoHappy: "开心",
       resetToday: "重置今日",
@@ -368,6 +398,16 @@ const CORE_I18N = {
         "*slurp slurp* ahh~",
         "All full!",
         "Woof, water's so good"
+      ],
+      standReminder: [
+        "You've been sitting a while. Stand up and stretch!",
+        "Legs going numb? Stand up for a bit~",
+        "Stand up with me for a minute!"
+      ],
+      standDone: [
+        "Standing tall! *tail wag*",
+        "Stretch~ feels good",
+        "Woof! Nice posture"
       ],
       customReminder: [
         (title: string) => `Reminder: ${title}`,
@@ -457,6 +497,8 @@ const CORE_I18N = {
       breakMute: "Leave me today",
       hydrationDone: "I drank water",
       hydrationSnooze: "Remind later",
+      standDone: "I'm standing",
+      standSnooze: "Remind in 10 min",
       focusBack: "Back to work",
       focusEnd: "End Focus",
       customReminderDone: "Got it"
@@ -468,6 +510,9 @@ const CORE_I18N = {
       stopFocusMode: "Stop Focus Mode",
       demoBreakReminder: "Demo: Break Reminder",
       demoHydrationReminder: "Demo: Hydration Reminder",
+      demoStandReminder: "Demo: Stand-up Reminder",
+      dockPet: "Tuck to Right Edge",
+      undockPet: "Show Companion",
       demoFocusWarning: "Demo: Distraction Nudge",
       demoHappyReaction: "Demo: Happy Reaction",
       settings: "Settings",
@@ -539,10 +584,21 @@ const CORE_I18N = {
       breakInterval: "Break Interval",
       enableHydrationReminder: "Enable Hydration Reminder",
       hydrationInterval: "Hydration Interval",
+      enableStandReminder: "Enable Stand-up Reminder",
+      standInterval: "Stand-up Interval",
       focus: "Focus",
       focusDuration: "Focus Duration",
       enableAgentActivity: "Agent Completion Alerts",
       enableAgentCompletionSound: "Agent Completion Sound",
+      agentAlertsWhenTucked: "Agent Alerts While Hidden/Tucked",
+      agentAlertsWhenTuckedHelp: "When off, Claude Code, Codex and other agent progress or completion alerts stay quiet while the companion is hidden or tucked to the right edge. Break, water and stand-up reminders still appear.",
+      dockPet: "Tuck to Right Edge",
+      dockPetHelp: "Leaves only a small paw tab on the right edge. Drag it up or down, click to show the companion. Reminders pop it out and it tucks back afterwards.",
+      dockIcon: "Tuck Icon",
+      dockIconHelp: "PNG, JPG, WebP, GIF or SVG up to 2MB. A square image with a transparent background works best.",
+      dockIconImport: "Change Icon",
+      dockIconReset: "Use Paw",
+      dockIconImportError: "Icon import failed",
       enableDistractionDetection: "Enable Distraction Detection",
       detectionGrace: "Detection Grace",
       blockedApps: "Blocked Apps",
@@ -554,6 +610,7 @@ const CORE_I18N = {
       statsHeading: "Stats",
       breaks: "Breaks",
       waters: "Waters",
+      stands: "Stand-ups",
       focusMin: "Focus",
       warnings: "Distractions",
       companionDays: "Companion Days",
@@ -585,11 +642,13 @@ const CORE_I18N = {
       timers: "Timers",
       break: "Break",
       water: "Water",
+      stand: "Stand-up",
       focusEnd: "Focus End",
       updated: "Updated",
       demo: "Demo",
       demoBreak: "Break",
       demoWater: "Water",
+      demoStand: "Stand-up",
       demoFocusWarning: "Distraction",
       demoHappy: "Happy",
       resetToday: "Reset Today",
@@ -2218,7 +2277,7 @@ export function i18n(language: Language): I18nBundle {
   if (language === "zh-CN" || language === "en") return I18N[language];
   return {
     ...I18N[language],
-    menu: LOCALIZED_MENUS[language],
-    settings: LOCALIZED_SETTINGS[language]
+    menu: { ...I18N.en.menu, ...LOCALIZED_MENUS[language] },
+    settings: { ...I18N.en.settings, ...LOCALIZED_SETTINGS[language] }
   } as unknown as I18nBundle;
 }

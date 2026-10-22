@@ -2,6 +2,7 @@ import electron from "electron";
 import type {
   AppSnapshot,
   DemoTrigger,
+  DockIconImportResult,
   InstalledPet,
   PetDeleteResult,
   PetImportResult,
@@ -48,6 +49,15 @@ const api = {
   startScreenBlock: (): void => ipcRenderer.send("break:start-screen-block"),
   endScreenBlock: (): void => ipcRenderer.send("break:end-screen-block"),
   resetToday: (): void => ipcRenderer.send("stats:reset-today"),
+  setPetDocked: (docked: boolean): void => ipcRenderer.send("dock:set", docked),
+  dockClicked: (): void => ipcRenderer.send("dock:clicked"),
+  dockContextMenu: (): void => ipcRenderer.send("dock:context-menu"),
+  dockDragStart: (offsetY: number): void => ipcRenderer.send("dock:drag-start", offsetY),
+  dockDragStop: (): void => ipcRenderer.send("dock:drag-stop"),
+  getDockIcon: (): Promise<string | null> => ipcRenderer.invoke("dock:get-icon"),
+  importDockIcon: (): Promise<DockIconImportResult> => ipcRenderer.invoke("dock:import-icon"),
+  resetDockIcon: (): void => ipcRenderer.send("dock:reset-icon"),
+  onDockIconUpdated: (callback: () => void): Unsubscribe => onChannel("dock:icon-updated", callback),
   onPetState: (callback: (state: PetState) => void): Unsubscribe =>
     onChannel("pet:set-state", callback),
   onPetLayout: (callback: (layout: PetLayout) => void): Unsubscribe =>
